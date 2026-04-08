@@ -280,7 +280,13 @@ impl Render for StatusBar {
         let colors = state.current_theme();
 
         if state.file.is_none() {
-            return div().h(px(26.0)).flex_shrink_0().into_any_element();
+            return div()
+                .h(px(26.0))
+                .flex_shrink_0()
+                .border_t_1()
+                .border_color(colors.border)
+                .bg(colors.bg)
+                .into_any_element();
         }
 
         let file = state.file.as_ref().unwrap();

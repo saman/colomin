@@ -1,5 +1,6 @@
 use gpui::*;
 use std::ops::Range;
+use std::time::Duration;
 
 use crate::csv_engine::{self, parser};
 use crate::state::{AppState, CellCoord, SelectionType, SortDirection, SortState};
@@ -18,14 +19,18 @@ actions!(
 pub struct TableView {
     pub state: Entity<AppState>,
     focus_handle: FocusHandle,
-    /// Currently editing: (row, col, text_buffer)
     editing: Option<(usize, usize, String)>,
     needs_focus: bool,
 }
 
 impl TableView {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
-        Self { state, focus_handle: cx.focus_handle(), editing: None, needs_focus: true }
+        Self {
+            state,
+            focus_handle: cx.focus_handle(),
+            editing: None,
+            needs_focus: true,
+        }
     }
 
     fn ensure_rows_cached(&self, start: usize, count: usize, cx: &mut Context<Self>) {
@@ -458,21 +463,58 @@ impl TableView {
 
         if let Some(path) = path {
             let path_str = path.to_string_lossy().to_string();
+            let filename = path.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| path_str.clone());
             let se = self.state.clone();
+
+            let progress_atomic = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+            let progress_for_thread = progress_atomic.clone();
+            let progress_for_poll = progress_atomic.clone();
 
             self.state.update(cx, |s, _| {
                 s.is_loading = true;
-                s.loading_message = format!("Opening {}...",
-                    std::path::Path::new(&path_str).file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| path_str.clone()));
+                s.loading_progress = 0.0;
+                s.loading_message = filename;
             });
             cx.notify();
 
-            let path_clone = path_str.clone();
+            // Poll progress every 50ms until is_loading is cleared by the I/O spawn
+            let se_poll = se.clone();
             cx.spawn(async move |_this, cx| {
-                let result = std::thread::spawn(move || {
-                    let index_result = parser::index_file(&std::path::PathBuf::from(&path_clone))?;
+                loop {
+                    cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
+                    let raw = progress_for_poll.load(std::sync::atomic::Ordering::Relaxed);
+                    let progress = f32::from_bits(raw);
+                    let still_loading = {
+                        let mut loading = true;
+                        let _ = se_poll.update(cx, |s, cx| {
+                            if s.is_loading {
+                                s.loading_progress = progress;
+                                cx.notify();
+                            } else {
+                                loading = false;
+                            }
+                        });
+                        loading
+                    };
+                    if !still_loading { break; }
+                }
+            }).detach();
+
+            let path_clone = path_str.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let result = (|| {
+                    let index_result = parser::index_file_with_progress(
+                        &std::path::PathBuf::from(&path_clone),
+                        move |done, total| {
+                            if total > 0 {
+                                let p = (done as f32 / total as f32).min(1.0);
+                                progress_for_thread.store(p.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                            }
+                        },
+                    )?;
                     let first_chunk = parser::read_chunk_with_delim(
                         &std::path::PathBuf::from(&path_clone),
                         &index_result.row_offsets,
@@ -482,9 +524,34 @@ impl TableView {
                         index_result.delimiter,
                     ).ok();
                     Ok::<_, String>((index_result, first_chunk))
-                })
-                .join()
-                .unwrap_or_else(|_| Err("Thread panicked".into()));
+                })();
+                let _ = tx.send(result);
+            });
+
+            cx.spawn(async move |_this, cx| {
+                let start = std::time::Instant::now();
+
+                // Poll until the background thread sends back the result.
+                let result = loop {
+                    match rx.try_recv() {
+                        Ok(r) => break r,
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(50))
+                                .await;
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            break Err("I/O thread panicked".into());
+                        }
+                    }
+                };
+
+                // Ensure loading screen is visible for at least 400ms
+                let elapsed = start.elapsed();
+                let min_display = std::time::Duration::from_millis(400);
+                if elapsed < min_display {
+                    cx.background_executor().timer(min_display - elapsed).await;
+                }
 
                 match result {
                     Ok((index_result, first_chunk)) => {
@@ -520,6 +587,7 @@ impl TableView {
                             state.sort_state = None;
                             state.has_filter = false;
                             state.is_loading = false;
+                            state.loading_progress = 1.0;
                             state.loading_message.clear();
                             state.clear_cache();
                             state.clear_selection();
@@ -538,6 +606,7 @@ impl TableView {
                         eprintln!("Failed to open file: {}", e);
                         let _ = se.update(cx, |s, cx| {
                             s.is_loading = false;
+                            s.loading_progress = 0.0;
                             s.loading_message.clear();
                             cx.notify();
                         });
@@ -623,19 +692,7 @@ impl TableView {
         cx.quit();
     }
 
-    fn handle_key_input(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        // Handle cmd+key shortcuts directly
-        if event.keystroke.modifiers.platform {
-            match event.keystroke.key.as_str() {
-                "o" => { self.on_t_open_file(&TOpenFile, window, cx); return; }
-                "s" => { self.on_t_save_file(&TSaveFile, window, cx); return; }
-                "t" => { self.on_t_cycle_theme(&TCycleTheme, window, cx); return; }
-                "q" => { self.on_t_quit(&TQuit, window, cx); return; }
-                "c" => { self.on_copy(&Copy, window, cx); return; }
-                _ => {}
-            }
-        }
-
+    fn handle_key_input(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         if self.editing.is_none() {
             // If not editing and a printable key is pressed, start editing
             if let Some(ref ch) = event.keystroke.key_char {
@@ -811,30 +868,71 @@ impl Render for TableView {
         let colors = state.current_theme();
 
         if state.is_loading {
-            return div().size_full().flex().items_center().justify_center()
-                .bg(colors.bg).text_size(px(14.0)).text_color(colors.text_secondary)
+            let filename = state.loading_message.clone();
+            let bg = colors.bg;
+            let text_color = colors.text_secondary;
+            let accent = colors.accent;
+
+            return div()
+                .id("loading-screen")
+                .size_full().flex().items_center().justify_center()
+                .bg(bg)
                 .key_context("TableView")
                 .track_focus(&self.focus_handle)
                 .on_key_down(cx.listener(Self::handle_key_input))
-                .flex_col().gap(px(8.0))
-                .child(state.loading_message.clone())
+                .flex_col()
+                .gap(px(16.0))
                 .child(
-                    div().text_size(px(12.0)).text_color(colors.text_tertiary)
-                        .child("Indexing file\u{2026}")
+                    svg()
+                        .path("assets/spinner.svg")
+                        .w(px(40.0)).h(px(40.0))
+                        .text_color(accent)
+                        .with_animation(
+                            "spinner-rotate",
+                            Animation::new(Duration::from_millis(800)).repeat(),
+                            |svg, delta| {
+                                svg.with_transformation(Transformation::rotate(percentage(delta)))
+                            },
+                        )
+                )
+                .child(
+                    div()
+                        .id("loading-filename")
+                        .text_size(px(14.0))
+                        .text_color(text_color)
+                        .child(if filename.is_empty() { "Loading…".to_string() } else { filename })
                 )
                 .into_any_element();
         }
 
         if state.file.is_none() {
+            let colors = self.state.read(cx).current_theme();
             return div().id("empty-state").size_full().flex().items_center().justify_center()
-                .bg(colors.bg).text_size(px(16.0)).text_color(colors.text_tertiary)
+                .bg(colors.bg).text_size(px(16.0))
                 .key_context("TableView")
                 .track_focus(&self.focus_handle)
                 .on_key_down(cx.listener(Self::handle_key_input))
                 .on_action(cx.listener(Self::on_t_open_file))
                 .on_action(cx.listener(Self::on_t_quit))
                 .on_action(cx.listener(Self::on_t_cycle_theme))
-                .child("Open a CSV file to get started (Cmd+O)")
+                .flex_col()
+                .gap(px(16.0))
+                .child(
+                    div()
+                        .id("open-file-btn")
+                        .bg(colors.accent)
+                        .text_color(colors.accent_text)
+                        .rounded(px(6.0))
+                        .px(px(20.0))
+                        .py(px(10.0))
+                        .cursor_pointer()
+                        .child("Open File")
+                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                            this.on_t_open_file(&TOpenFile, window, cx);
+                        }))
+                )
+                .child(div().text_color(colors.text_tertiary).text_size(px(14.0))
+                    .child("or press Cmd+O"))
                 .into_any_element();
         }
 

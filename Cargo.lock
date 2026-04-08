@@ -874,6 +874,7 @@ dependencies = [
 name = "colomin-gpui"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "csv",
  "gpui",
  "gpui_platform",

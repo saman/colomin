@@ -36,7 +36,7 @@
             <key>CFBundleTypeRole</key>
             <string>Editor</string>
             <key>LSHandlerRank</key>
-            <string>Default</string>
+            <string>Owner</string>
         </dict>
     </array>
 </dict>

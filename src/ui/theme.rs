@@ -13,6 +13,8 @@ pub struct ThemeColors {
     pub text_secondary: Hsla,
     pub text_tertiary: Hsla,
     pub accent: Hsla,
+    pub accent_hover: Hsla,
+    pub accent_text: Hsla,
     pub accent_subtle: Hsla,
     pub edited: Hsla,
     pub hover_row: Hsla,
@@ -226,6 +228,12 @@ fn zed_style_to_colors(style: &ZedStyle, appearance: ThemeAppearance) -> ThemeCo
         text_secondary,
         text_tertiary,
         accent,
+        accent_hover: accent,
+        accent_text: if appearance == ThemeAppearance::Light {
+            hex(0xFFFFFF)
+        } else {
+            hex(0x000000)
+        },
         accent_subtle,
         edited,
         hover_row,
@@ -319,6 +327,8 @@ pub fn default_light() -> ThemeColors {
         text_secondary: hex(0x555555),
         text_tertiary: hex(0x888888),
         accent: hex(0x3B82F6),
+        accent_hover: hex(0x2563EB),
+        accent_text: hex(0xFFFFFF),
         accent_subtle: hex(0xEFF6FF),
         edited: hex(0xFFF7ED),
         hover_row: hex(0xF5F8FF),
@@ -339,6 +349,8 @@ pub fn default_dark() -> ThemeColors {
         text_secondary: hex(0x6B6B6B),
         text_tertiary: hex(0x4A4A4A),
         accent: hex(0x60A5FA),
+        accent_hover: hex(0x3B82F6),
+        accent_text: hex(0x000000),
         accent_subtle: hex(0x172554),
         edited: hex(0x332200),
         hover_row: hex(0x111827),

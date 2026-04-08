@@ -178,6 +178,8 @@ pub struct AppState {
     /// Loading state for file open
     pub is_loading: bool,
     pub loading_message: String,
+    /// Loading progress 0.0–1.0 (updated from background thread via shared atomic)
+    pub loading_progress: f32,
     /// Index into the available themes list
     pub theme_index: usize,
     /// Pending edit request from double-click (row, col, value)
@@ -219,6 +221,7 @@ impl AppState {
             toast_message: None,
             is_loading: false,
             loading_message: String::new(),
+            loading_progress: 0.0,
             theme_index: 0,
             editing_cell: None,
             context_menu: None,

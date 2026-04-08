@@ -53,6 +53,11 @@ if [ -d "$PROJECT_DIR/themes" ]; then
     cp -r "$PROJECT_DIR/themes" "$BUNDLE_DIR/Contents/Resources/"
 fi
 
+# Copy assets if present
+if [ -d "$PROJECT_DIR/assets" ]; then
+    cp -r "$PROJECT_DIR/assets" "$BUNDLE_DIR/Contents/Resources/"
+fi
+
 echo ""
 echo "Done: $BUNDLE_DIR"
 echo "Run with: open \"$BUNDLE_DIR\""

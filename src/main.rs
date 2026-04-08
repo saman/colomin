@@ -3,7 +3,10 @@ mod state;
 mod ui;
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU32, Ordering};
 
+use anyhow;
 use gpui::*;
 use state::AppState;
 use ui::status_bar::StatusBar;
@@ -11,6 +14,53 @@ use ui::table::{self, TableView};
 use ui::theme::ThemeColors;
 
 actions!(colomin, [OpenFile, Quit, SaveFile, CycleTheme]);
+
+/// Resolve a bundled asset path at runtime.
+/// In a .app bundle: <exe>/../Resources/<name>
+/// In dev (cargo run): <workspace>/assets/<name>
+pub fn asset_path(name: &str) -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        let bundle = exe.parent() // MacOS/
+            .and_then(|p| p.parent()) // Contents/
+            .map(|p| p.join("Resources").join("assets").join(name));
+        if let Some(p) = bundle {
+            if p.exists() { return p; }
+        }
+    }
+    // fallback: dev path relative to workspace
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets").join(name)
+}
+
+/// AssetSource that reads from the bundle Resources/assets directory
+/// (or the workspace assets/ directory in dev mode).
+struct ColominAssets;
+
+impl AssetSource for ColominAssets {
+    fn load(&self, path: &str) -> Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        // `path` is e.g. "assets/spinner.svg" as passed to svg().path(...)
+        // Resolve relative to bundle Resources/ or workspace root.
+        let full = if let Ok(exe) = std::env::current_exe() {
+            let bundle = exe.parent()
+                .and_then(|p| p.parent())
+                .map(|p| p.join("Resources").join(path));
+            if let Some(p) = bundle {
+                if p.exists() { p } else { PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(path) }
+            } else {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(path)
+            }
+        } else {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(path)
+        };
+        let bytes = std::fs::read(&full).map_err(|e| {
+            anyhow::anyhow!("AssetSource: failed to read {}: {}", full.display(), e)
+        })?;
+        Ok(Some(std::borrow::Cow::Owned(bytes)))
+    }
+
+    fn list(&self, _path: &str) -> Result<Vec<SharedString>> {
+        Ok(vec![])
+    }
+}
 
 struct Colomin {
     state: Entity<AppState>,
@@ -92,22 +142,63 @@ impl Colomin {
 
     /// Open file asynchronously — ALL I/O on background thread
     fn open_file_async(&mut self, path: String, cx: &mut Context<Self>) {
+        let filename = std::path::Path::new(&path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.clone());
+
+        // Shared atomic progress: 0–100 stored as u32 bits of f32
+        let progress_atomic = Arc::new(AtomicU32::new(0));
+        let progress_for_thread = progress_atomic.clone();
+        let progress_for_poll = progress_atomic.clone();
+
         self.state.update(cx, |s, _| {
             s.is_loading = true;
-            s.loading_message = format!("Opening {}...",
-                std::path::Path::new(&path).file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| path.clone()));
+            s.loading_progress = 0.0;
+            s.loading_message = filename.clone();
         });
         cx.notify();
 
         let se = self.state.clone();
         let path_clone = path.clone();
 
+        // Poll progress every 50ms and push to AppState so the bar animates.
+        let se_poll = se.clone();
         cx.spawn(async move |_this, cx| {
-            // Do ALL I/O on the background thread: index + first chunk
-            let result = std::thread::spawn(move || {
-                let index_result = csv_engine::parser::index_file(&PathBuf::from(&path_clone))?;
+            loop {
+                cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
+                let raw = progress_for_poll.load(Ordering::Relaxed);
+                let progress = f32::from_bits(raw);
+                let still_loading = {
+                    let mut loading = true;
+                    let _ = se_poll.update(cx, |s, cx| {
+                        if s.is_loading {
+                            s.loading_progress = progress;
+                            cx.notify();
+                        } else {
+                            loading = false;
+                        }
+                    });
+                    loading
+                };
+                if !still_loading { break; }
+            }
+        }).detach();
+
+        // Spawn the I/O work on a dedicated OS thread and use a oneshot channel
+        // to receive the result without blocking the main/executor thread.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = (|| {
+                let index_result = csv_engine::parser::index_file_with_progress(
+                    &PathBuf::from(&path_clone),
+                    move |done, total| {
+                        if total > 0 {
+                            let p = (done as f32 / total as f32).min(1.0);
+                            progress_for_thread.store(p.to_bits(), Ordering::Relaxed);
+                        }
+                    },
+                )?;
                 let first_chunk = csv_engine::parser::read_chunk_with_delim(
                     &PathBuf::from(&path_clone),
                     &index_result.row_offsets,
@@ -117,14 +208,39 @@ impl Colomin {
                     index_result.delimiter,
                 ).ok();
                 Ok::<_, String>((index_result, first_chunk))
-            })
-            .join()
-            .unwrap_or_else(|_| Err("Thread panicked".into()));
+            })();
+            let _ = tx.send(result);
+        });
+
+        cx.spawn(async move |_this, cx| {
+            let start = std::time::Instant::now();
+
+            // Poll until the background thread sends back the result.
+            // Each iteration yields to the executor so the UI stays responsive.
+            let result = loop {
+                match rx.try_recv() {
+                    Ok(r) => break r,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(50))
+                            .await;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        break Err("I/O thread panicked".into());
+                    }
+                }
+            };
+
+            // Ensure loading screen is visible for at least 400ms
+            let elapsed = start.elapsed();
+            let min_display = std::time::Duration::from_millis(400);
+            if elapsed < min_display {
+                cx.background_executor().timer(min_display - elapsed).await;
+            }
 
             match result {
                 Ok((index_result, first_chunk)) => {
                     let _ = se.update(cx, |state, cx| {
-                        // Just apply data — no I/O here
                         let file_path = PathBuf::from(&path);
                         let col_count = index_result.columns.len();
                         let metadata = csv_engine::types::CsvMetadata {
@@ -156,6 +272,7 @@ impl Colomin {
                         state.sort_state = None;
                         state.has_filter = false;
                         state.is_loading = false;
+                        state.loading_progress = 1.0;
                         state.loading_message.clear();
                         state.clear_cache();
                         state.clear_selection();
@@ -174,6 +291,7 @@ impl Colomin {
                     eprintln!("Failed to open file: {}", e);
                     let _ = se.update(cx, |s, cx| {
                         s.is_loading = false;
+                        s.loading_progress = 0.0;
                         s.loading_message.clear();
                         cx.notify();
                     });
@@ -212,7 +330,8 @@ impl Colomin {
 
         match save_result {
             Ok(()) => {
-                self.open_file_sync(&target_path.to_string_lossy(), cx);
+                let path_str = target_path.to_string_lossy().to_string();
+                self.open_file_async(path_str, cx);
             }
             Err(e) => eprintln!("Save failed: {}", e),
         }
@@ -305,7 +424,12 @@ impl Render for Colomin {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         cx.observe(&self.state, |_this, _state, cx| cx.notify()).detach();
 
-        let has_menu = self.state.read(cx).context_menu.is_some();
+        let state = self.state.read(cx);
+        let has_menu = state.context_menu.is_some();
+        let has_file = state.file.is_some();
+        let is_loading = state.is_loading;
+        drop(state);
+
         let se = self.state.clone();
 
         let mut root = div()
@@ -319,8 +443,12 @@ impl Render for Colomin {
             .on_action(cx.listener(Self::on_cycle_theme))
             .child(
                 div().flex_1().min_h_0().child(self.table_view.clone()),
-            )
-            .child(self.status_bar.clone());
+            );
+
+        // Only show status bar when a file is loaded (not during loading or empty state)
+        if has_file && !is_loading {
+            root = root.child(self.status_bar.clone());
+        }
 
         // Context menu overlay
         if let Some(menu) = self.render_context_menu(cx) {
@@ -356,7 +484,48 @@ fn main() {
         } else { None }
     });
 
-    gpui_platform::application().run(move |cx: &mut App| {
+    // Queue for files sent from Finder (via Apple Events / application:openURLs:).
+    // The on_open_urls callback fires on a non-GPUI thread, so we use a Mutex queue
+    // and drain it on the main loop via cx.on_reopen or a periodic check.
+    let finder_queue: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let finder_queue_cb = finder_queue.clone();
+
+    let app = gpui_platform::application().with_assets(ColominAssets);
+
+    app.on_open_urls(move |urls| {
+        let paths: Vec<String> = urls
+            .into_iter()
+            .filter_map(|url| {
+                url.strip_prefix("file://").map(|p| {
+                    // Percent-decode (e.g. spaces encoded as %20)
+                    let decoded: String = p
+                        .split('%')
+                        .enumerate()
+                        .map(|(i, s)| {
+                            if i == 0 { s.to_string() }
+                            else if s.len() >= 2 {
+                                let hex = &s[..2];
+                                let rest = &s[2..];
+                                if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                                    format!("{}{}", byte as char, rest)
+                                } else {
+                                    format!("%{}", s)
+                                }
+                            } else {
+                                format!("%{}", s)
+                            }
+                        })
+                        .collect();
+                    decoded
+                })
+            })
+            .collect();
+        if let Ok(mut q) = finder_queue_cb.lock() {
+            q.extend(paths);
+        }
+    });
+
+    app.run(move |cx: &mut App| {
         cx.bind_keys([
             KeyBinding::new("up", table::MoveUp, Some("TableView")),
             KeyBinding::new("down", table::MoveDown, Some("TableView")),
@@ -378,7 +547,8 @@ fn main() {
         ]);
 
         let bounds = Bounds::centered(None, size(px(1200.), px(800.)), cx);
-        cx.open_window(
+        let finder_queue_init = finder_queue.clone();
+        let window_handle = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
@@ -415,7 +585,21 @@ fn main() {
                         status_bar,
                     };
                     if let Some(ref path) = file_to_open {
-                        c.open_file_sync(path, cx);
+                        // Use async so the main thread is never blocked —
+                        // all I/O happens on a background thread and the
+                        // spinner can animate freely.
+                        c.open_file_async(path.clone(), cx);
+                    } else {
+                        // If the finder queue already has a file (Finder open),
+                        // set loading immediately so the first render shows loading not empty state
+                        if let Ok(q) = finder_queue_init.lock() {
+                            if !q.is_empty() {
+                                c.state.update(cx, |s, _| {
+                                    s.is_loading = true;
+                                    s.loading_progress = 0.0;
+                                });
+                            }
+                        }
                     }
                     c
                 });
@@ -424,6 +608,31 @@ fn main() {
             },
         )
         .unwrap();
+
+        // Poll the finder queue and open any queued files.
+        // First iteration fires immediately (no delay) to catch files already
+        // queued when the app was launched from Finder.
+        cx.spawn({
+            let finder_queue = finder_queue.clone();
+            async move |cx| {
+                let mut first = true;
+                loop {
+                    if !first {
+                        cx.background_executor().timer(std::time::Duration::from_millis(100)).await;
+                    }
+                    first = false;
+                    let paths = {
+                        let mut q = finder_queue.lock().unwrap();
+                        std::mem::take(&mut *q)
+                    };
+                    for path in paths {
+                        let _ = window_handle.update(cx, |colomin, _window, cx| {
+                            colomin.open_file_async(path, cx);
+                        });
+                    }
+                }
+            }
+        }).detach();
 
         cx.on_window_closed(|cx, _| {
             cx.quit();
