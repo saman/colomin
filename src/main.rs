@@ -421,15 +421,26 @@ impl Colomin {
 }
 
 impl Render for Colomin {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         cx.observe(&self.state, |_this, _state, cx| cx.notify()).detach();
 
         let state = self.state.read(cx);
         let has_menu = state.context_menu.is_some();
         let has_file = state.file.is_some();
         let is_loading = state.is_loading;
+
+        // Update window title with filename when a file is open
+        let title = if let Some(ref f) = state.file {
+            let name = f.file_path.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Colomin".into());
+            format!("{} — Colomin", name)
+        } else {
+            "Colomin".into()
+        };
         drop(state);
 
+        window.set_window_title(&title);
         let se = self.state.clone();
 
         let mut root = div()

@@ -294,13 +294,6 @@ impl Render for StatusBar {
         let col_count = state.col_count();
         let file_size = file.metadata.file_size_bytes;
 
-        // ── Zone 1: Left — file info ──
-        let filename = file
-            .file_path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "Untitled".into());
-
         let row_text = if state.has_filter {
             format!(
                 "{} / {} rows",
@@ -316,8 +309,6 @@ impl Render for StatusBar {
             .items_center()
             .gap(px(6.0))
             .flex_shrink_0()
-            .child(div().text_color(colors.text_secondary).child(filename))
-            .child(Self::dot(&colors))
             .child(if state.has_filter {
                 div().text_color(colors.accent).child(row_text)
             } else {

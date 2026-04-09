@@ -1,5 +1,7 @@
 use gpui::*;
+use std::cell::Cell;
 use std::ops::Range;
+use std::rc::Rc;
 use std::time::Duration;
 
 use crate::csv_engine::{self, parser};
@@ -21,6 +23,14 @@ pub struct TableView {
     focus_handle: FocusHandle,
     editing: Option<(usize, usize, String)>,
     needs_focus: bool,
+    scroll_handle: UniformListScrollHandle,
+    /// Shared scrollbar drag state: Some(true) = vertical, Some(false) = horizontal.
+    /// Uses Rc<Cell<>> so window-level mouse listeners can access it from plain closures.
+    scrollbar_drag: Rc<Cell<Option<bool>>>,
+    /// Manual horizontal scroll offset (positive = scrolled right).
+    /// Managed independently from the uniform_list which only handles vertical scroll.
+    horizontal_offset: Rc<Cell<f32>>,
+    scrollbar_initialized: bool,
 }
 
 impl TableView {
@@ -30,6 +40,10 @@ impl TableView {
             focus_handle: cx.focus_handle(),
             editing: None,
             needs_focus: true,
+            scroll_handle: UniformListScrollHandle::new(),
+            scrollbar_drag: Rc::new(Cell::new(None)),
+            horizontal_offset: Rc::new(Cell::new(0.0)),
+            scrollbar_initialized: false,
         }
     }
 
@@ -310,6 +324,45 @@ impl TableView {
         self.editing = None;
         self.state.update(cx, |s, _| { s.editing_cell = None; });
         cx.notify();
+    }
+
+    /// Map a mouse position to a scroll offset and apply it (for scrollbar click/drag).
+    /// This is a static helper that works with shared Rc state for use from window-level listeners.
+    fn apply_scrollbar_drag(
+        scrollbar_drag: &Rc<Cell<Option<bool>>>,
+        scroll_handle: &UniformListScrollHandle,
+        horizontal_offset: &Rc<Cell<f32>>,
+        mouse_pos: Point<Pixels>,
+        content_width: f32,
+    ) {
+        let is_vertical = match scrollbar_drag.get() {
+            Some(v) => v,
+            None => return,
+        };
+        let sh = scroll_handle.0.borrow();
+        let bounds = sh.base_handle.bounds();
+        drop(sh);
+
+        if is_vertical {
+            let sh = scroll_handle.0.borrow();
+            let max_off = sh.base_handle.max_offset();
+            let current = sh.base_handle.offset();
+            drop(sh);
+            let vp_h = bounds.size.height.as_f32();
+            let max_y = max_off.y.as_f32();
+            if vp_h <= 0.0 || max_y <= 0.0 { return; }
+            let relative_y = mouse_pos.y.as_f32() - bounds.origin.y.as_f32();
+            let ratio = (relative_y / vp_h).clamp(0.0, 1.0);
+            let new_offset = point(current.x, px(-(ratio * max_y)));
+            scroll_handle.0.borrow().base_handle.set_offset(new_offset);
+        } else {
+            let vp_w = bounds.size.width.as_f32();
+            let max_x = (content_width - vp_w).max(0.0);
+            if vp_w <= 0.0 || max_x <= 0.0 { return; }
+            let relative_x = mouse_pos.x.as_f32() - bounds.origin.x.as_f32();
+            let ratio = (relative_x / vp_w).clamp(0.0, 1.0);
+            horizontal_offset.set(ratio * max_x);
+        }
     }
 
     fn start_edit_from_state(&mut self, cx: &App) {
@@ -725,11 +778,16 @@ impl TableView {
         let colors = state.current_theme();
         let file = state.file.as_ref().unwrap();
         let columns = file.metadata.columns.clone();
+        let total_w: f32 = ROW_NUMBER_WIDTH + columns.iter().map(|c| state.column_width(c.index)).sum::<f32>();
 
-        let mut hdr = div().id("hdr").flex().flex_shrink_0().h(px(HEADER_HEIGHT))
-            .bg(colors.surface).border_b_1().border_color(colors.border)
-            .text_size(px(11.0)).text_color(colors.text_secondary);
-        hdr = hdr.child(div().flex_shrink_0().w(px(ROW_NUMBER_WIDTH)).h_full().border_r_1().border_color(colors.border));
+        // Horizontal offset (positive = scrolled right)
+        let h_off = self.horizontal_offset.get();
+
+        // Inner row: absolutely positioned so negative left doesn't affect parent layout
+        let mut inner = div().flex().flex_shrink_0().h_full()
+            .absolute().top_0().left(px(-h_off))
+            .w(px(total_w));
+        inner = inner.child(div().flex_shrink_0().w(px(ROW_NUMBER_WIDTH)).h_full().border_r_1().border_color(colors.border));
 
         for col in columns.iter() {
             let w = state.column_width(col.index);
@@ -741,7 +799,7 @@ impl TableView {
             let tc = if is_sel { colors.accent } else { colors.text_secondary };
             let bg = if is_sel { colors.accent_subtle } else { colors.surface };
             let se = self.state.clone();
-            hdr = hdr.child(
+            inner = inner.child(
                 div().id(ElementId::NamedInteger("h".into(), ci as u64))
                     .flex_shrink_0().w(px(w)).h_full().flex().items_center().pl(px(8.0))
                     .bg(bg).text_color(tc)
@@ -755,7 +813,13 @@ impl TableView {
                     }),
             );
         }
-        hdr
+
+        // Outer container: relative for absolute child, clips overflow
+        div().id("hdr").flex_shrink_0().h(px(HEADER_HEIGHT))
+            .bg(colors.surface).border_b_1().border_color(colors.border)
+            .text_size(px(11.0)).text_color(colors.text_secondary)
+            .relative().overflow_hidden()
+            .child(inner)
     }
 
     fn render_row_el(&self, ri: usize, cx: &App) -> Stateful<Div> {
@@ -767,15 +831,26 @@ impl TableView {
         let row_bg = if is_row_sel { colors.accent_subtle } else { colors.surface };
         let rn_color = if is_row_sel { colors.accent } else { colors.text_tertiary };
         let cached = state.get_cached_row(ri);
+        let total_w: f32 = ROW_NUMBER_WIDTH + columns.iter().map(|c| state.column_width(c.index)).sum::<f32>();
+
+        // Horizontal offset (positive = scrolled right)
+        let h_off = self.horizontal_offset.get();
 
         let hover_bg = colors.hover_row;
-        let mut row = div().id(ElementId::NamedInteger("r".into(), ri as u64))
-            .flex().flex_shrink_0().h(px(ROW_HEIGHT)).bg(row_bg)
+        // Outer row: relative positioning context, clips overflow, fixed height
+        let row_outer = div().id(ElementId::NamedInteger("r".into(), ri as u64))
+            .h(px(ROW_HEIGHT)).w_full().relative().overflow_hidden()
+            .bg(row_bg)
             .border_b_1().border_color(colors.border)
             .text_size(px(13.0)).text_color(colors.text_primary)
             .hover(move |s| s.bg(hover_bg));
 
-        row = row.child(
+        // Inner content: absolutely positioned so negative left doesn't affect parent layout
+        let mut inner = div().flex().flex_shrink_0().h_full()
+            .absolute().top_0().left(px(-h_off))
+            .w(px(total_w));
+
+        inner = inner.child(
             div().flex_shrink_0().w(px(ROW_NUMBER_WIDTH)).h_full()
                 .flex().items_center().justify_end().pr(px(8.0))
                 .border_r_1().border_color(colors.border)
@@ -783,8 +858,22 @@ impl TableView {
                 .child(format!("{}", ri + 1)),
         );
 
+        // If data not yet cached, render placeholder cells
+        if cached.is_none() {
+            for col in columns.iter() {
+                let w = state.column_width(col.index);
+                inner = inner.child(
+                    div().flex_shrink_0().w(px(w)).h_full()
+                        .flex().items_center().pl(px(8.0))
+                        .text_color(colors.text_tertiary)
+                        .child("\u{2026}")
+                );
+            }
+            return row_outer.child(inner);
+        }
+
         // Get selection range for border drawing
-        let sel_range = state.selection_range(); // (min_row, max_row, min_col, max_col)
+        let sel_range = state.selection_range();
 
         for col in columns.iter() {
             let w = state.column_width(col.index);
@@ -826,8 +915,6 @@ impl TableView {
             } else if is_sel {
                 if let Some((mr, xr, mc, xc)) = sel_range {
                     let sel_border = colors.accent;
-                    // Apply dashed border on selection edges
-                    // We need separate wrapper divs per edge because border_dashed applies to all borders
                     let is_top = ri == mr;
                     let is_bottom = ri == xr;
                     let is_left = ci == mc;
@@ -840,15 +927,14 @@ impl TableView {
                         if is_left { border_cell = border_cell.border_l_1(); }
                         if is_right { border_cell = border_cell.border_r_1(); }
                         border_cell = border_cell.border_color(sel_border).border_dashed();
-                        // Wrap cell content with relative positioning
                         cell = cell.relative().child(border_cell);
                     }
                 }
             }
 
-            row = row.child(cell);
+            inner = inner.child(cell);
         }
-        row
+        row_outer.child(inner)
     }
 }
 
@@ -952,6 +1038,7 @@ impl Render for TableView {
             "rows", total_rows,
             cx.processor(|this: &mut Self, range: Range<usize>, _: &mut Window, cx: &mut Context<Self>| {
                 this.ensure_rows_cached(range.start, range.end - range.start, cx);
+                this.ensure_rows_cached(range.start, range.end - range.start, cx);
                 let mut items = Vec::new();
                 for ri in range {
                     let se = this.state.clone();
@@ -1029,10 +1116,159 @@ impl Render for TableView {
                 }
                 items
             }),
-        ).h_full();
+        )
+        .size_full()
+        .flex_grow()
+        .track_scroll(&self.scroll_handle);
 
-        let se_move = self.state.clone();
-        let se_up = self.state.clone();
+        // --- Scrollbar computation ---
+        const SCROLLBAR_SIZE: f32 = 8.0;
+        const SCROLLBAR_MIN_THUMB: f32 = 24.0;
+        const SCROLLBAR_MARGIN: f32 = 2.0;
+
+        let sh = self.scroll_handle.0.borrow();
+        let s_off = sh.base_handle.offset();
+        let s_max = sh.base_handle.max_offset();
+        let s_bounds = sh.base_handle.bounds();
+        drop(sh);
+
+        let vp_h = s_bounds.size.height.as_f32();
+        let vp_w = s_bounds.size.width.as_f32();
+        let off_y = s_off.y.as_f32();   // negative when scrolled down
+        let max_y = s_max.y.as_f32();   // positive max scrollable distance
+
+        // Horizontal scroll: computed from our manual state and column widths
+        let state_ref = self.state.read(cx);
+        let content_w: f32 = if let Some(file) = &state_ref.file {
+            ROW_NUMBER_WIDTH + file.metadata.columns.iter().map(|c| state_ref.column_width(c.index)).sum::<f32>()
+        } else { 0.0 };
+        drop(state_ref);
+        let max_x = (content_w - vp_w).max(0.0);
+        let h_off = self.horizontal_offset.get().clamp(0.0, max_x);
+        // Sync clamped value back
+        self.horizontal_offset.set(h_off);
+
+        let thumb_color = hsla(0., 0., 0.5, 0.45);
+
+        // After the first layout, the scroll handle has real bounds — trigger re-render
+        // so scrollbars appear without requiring user interaction first.
+        if !self.scrollbar_initialized && (vp_h == 0.0 || vp_w == 0.0) {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(Duration::from_millis(100)).await;
+                let _ = this.update(cx, |this, cx| {
+                    this.scrollbar_initialized = true;
+                    cx.notify();
+                });
+            }).detach();
+        }
+
+        // Determine which scrollbars are present for corner gap calculation
+        let has_v_bar = max_y > 0.0 && vp_h > 0.0;
+        let has_h_bar = max_x > 0.0 && vp_w > 0.0;
+        let corner_gap = SCROLLBAR_SIZE + SCROLLBAR_MARGIN * 2.0;
+
+        // Vertical scrollbar
+        let v_bar: Option<Stateful<Div>> = if has_v_bar {
+            let v_bar_h = if has_h_bar { vp_h - corner_gap } else { vp_h };
+            let content_h = vp_h + max_y;
+            let thumb_h = (vp_h / content_h * v_bar_h).max(SCROLLBAR_MIN_THUMB);
+            let track_h = v_bar_h - thumb_h;
+            let scroll_pos = -off_y;
+            let thumb_top = if max_y > 0.0 { scroll_pos / max_y * track_h } else { 0.0 };
+            let drag = self.scrollbar_drag.clone();
+            let sh = self.scroll_handle.clone();
+            let h_off_rc = self.horizontal_offset.clone();
+            Some(
+                div().id("v-scrollbar").absolute().top(px(0.)).right(px(SCROLLBAR_MARGIN))
+                    .w(px(SCROLLBAR_SIZE)).h(px(v_bar_h))
+                    .cursor(CursorStyle::Arrow)
+                    .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, _, _| {
+                        drag.set(Some(true));
+                        Self::apply_scrollbar_drag(&drag, &sh, &h_off_rc, ev.position, content_w);
+                    })
+                    .child(
+                        div().absolute().top(px(thumb_top))
+                            .w(px(SCROLLBAR_SIZE)).h(px(thumb_h))
+                            .rounded(px(SCROLLBAR_SIZE / 2.0))
+                            .bg(thumb_color)
+                    )
+            )
+        } else { None };
+
+        // Horizontal scrollbar
+        let h_bar: Option<Stateful<Div>> = if has_h_bar {
+            let h_bar_w = if has_v_bar { vp_w - corner_gap } else { vp_w };
+            let thumb_w = (vp_w / content_w * h_bar_w).max(SCROLLBAR_MIN_THUMB);
+            let track_w = h_bar_w - thumb_w;
+            let thumb_left = if max_x > 0.0 { h_off / max_x * track_w } else { 0.0 };
+            let drag = self.scrollbar_drag.clone();
+            let sh = self.scroll_handle.clone();
+            let h_off_rc = self.horizontal_offset.clone();
+            Some(
+                div().id("h-scrollbar").absolute().bottom(px(SCROLLBAR_MARGIN)).left(px(0.))
+                    .h(px(SCROLLBAR_SIZE)).w(px(h_bar_w))
+                    .cursor(CursorStyle::Arrow)
+                    .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, _, _| {
+                        drag.set(Some(false));
+                        Self::apply_scrollbar_drag(&drag, &sh, &h_off_rc, ev.position, content_w);
+                    })
+                    .child(
+                        div().absolute().left(px(thumb_left))
+                            .h(px(SCROLLBAR_SIZE)).w(px(thumb_w))
+                            .rounded(px(SCROLLBAR_SIZE / 2.0))
+                            .bg(thumb_color)
+                    )
+            )
+        } else { None };
+
+        // Global window-level mouse listeners for scrollbar drag (via canvas paint callback).
+        // These fire regardless of cursor position — essential for native-feel scrollbar dragging.
+        let drag_for_canvas = self.scrollbar_drag.clone();
+        let sh_for_canvas = self.scroll_handle.clone();
+        let h_off_for_canvas = self.horizontal_offset.clone();
+        let cw_for_canvas = content_w;
+        let scrollbar_canvas = canvas(|_, _, _| {}, move |_, _, window, _| {
+            // MouseMoveEvent: track drag position globally
+            let drag_move = drag_for_canvas.clone();
+            let sh_move = sh_for_canvas.clone();
+            let h_off_move = h_off_for_canvas.clone();
+            window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, _| {
+                if phase != DispatchPhase::Capture { return; }
+                if drag_move.get().is_none() { return; }
+                if !event.dragging() { return; }
+                Self::apply_scrollbar_drag(&drag_move, &sh_move, &h_off_move, event.position, cw_for_canvas);
+                window.refresh();
+            });
+
+            // MouseUpEvent: release drag globally
+            let drag_up = drag_for_canvas.clone();
+            window.on_mouse_event(move |_event: &MouseUpEvent, phase, window, _| {
+                if phase != DispatchPhase::Capture { return; }
+                if drag_up.get().is_none() { return; }
+                drag_up.set(None);
+                window.refresh();
+            });
+
+            // ScrollWheelEvent: capture horizontal scroll wheel and update horizontal_offset.
+            // Use Capture phase so we get the event before uniform_list's scroll handler
+            // consumes it in Bubble phase.
+            let h_off_scroll = h_off_for_canvas.clone();
+            let max_x_for_scroll = max_x;
+            window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, _| {
+                if phase != DispatchPhase::Capture { return; }
+                let delta_x = match event.delta {
+                    ScrollDelta::Pixels(pt) => pt.x.as_f32(),
+                    ScrollDelta::Lines(pt) => pt.x * 20.0,
+                };
+                if delta_x == 0.0 { return; }
+                let cur = h_off_scroll.get();
+                let new_val = (cur - delta_x).clamp(0.0, max_x_for_scroll);
+                if new_val != cur {
+                    h_off_scroll.set(new_val);
+                    window.refresh();
+                }
+            });
+        }).w(px(0.)).h(px(0.)).absolute();
 
         div()
             .size_full().flex().flex_col().bg(colors.bg)
@@ -1055,18 +1291,18 @@ impl Render for TableView {
             .on_action(cx.listener(Self::on_t_cycle_theme))
             .on_action(cx.listener(Self::on_t_quit))
             .on_key_down(cx.listener(Self::handle_key_input))
-            .on_mouse_move(move |ev, _, cx| {
-                let st = se_move.read(cx);
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
+                // Cell selection drag (scrollbar drag is handled by global canvas listeners)
+                if this.scrollbar_drag.get().is_some() { return; }
+                let st = this.state.read(cx);
                 if !st.is_dragging { return; }
                 let x = ev.position.x.as_f32();
                 let y = ev.position.y.as_f32();
-                // Calculate row from y (subtract header height)
                 let row_y = y - HEADER_HEIGHT;
                 if row_y < 0.0 { return; }
                 let ri = (row_y / ROW_HEIGHT) as usize;
                 let total = st.effective_row_count();
                 let ri = ri.min(total.saturating_sub(1));
-                // Calculate col from x
                 let mut col_x = ROW_NUMBER_WIDTH;
                 let mut cc = 0usize;
                 for c in 0..st.col_count() {
@@ -1079,17 +1315,30 @@ impl Render for TableView {
                 drop(st);
                 let new_focus = CellCoord { row: ri, col: cc };
                 if cur_focus != Some(new_focus) {
-                    se_move.update(cx, |s, _| {
+                    this.state.update(cx, |s, _| {
                         s.selection_focus = Some(new_focus);
                         s.selection_type = Some(SelectionType::Cell);
                     });
                 }
-            })
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                se_up.update(cx, |s, _| { s.is_dragging = false; });
-            })
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                // Cell selection drag release (scrollbar mouse-up is handled globally)
+                this.state.update(cx, |s, _| { s.is_dragging = false; });
+            }))
+            // Header row (static, clipped, synced with horizontal scroll)
             .child(header)
-            .child(row_list)
+            // Body: uniform_list + scrollbar overlays + global drag canvas
+            .child(
+                div()
+                    .flex_grow()
+                    .w_full()
+                    .relative()
+                    .overflow_hidden()
+                    .child(row_list)
+                    .child(scrollbar_canvas)
+                    .children(v_bar)
+                    .children(h_bar)
+            )
             .into_any_element()
     }
 }
