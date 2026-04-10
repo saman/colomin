@@ -90,7 +90,7 @@ URLs are `file://` with percent-encoding — decoded manually in `on_open_urls` 
 - **Row**: `selected_rows: Vec<usize>` (supports multi-select with Cmd+click)
 - **Column**: `selected_columns: Vec<usize>`
 - `is_cell_selected(row, col)` checks all three modes
-- Cell hit-test: linear scan of column widths starting from `ROW_NUMBER_WIDTH`
+- Cell hit-test: linear scan of column widths starting from `ROW_NUMBER_WIDTH`; uses `screen_x + horizontal_offset` to convert to content-space x before scanning
 
 ### Stats computation
 - `maybe_compute_stats()` called every render in TableView
@@ -383,6 +383,14 @@ row_outer  [id("r",ri), relative, overflow_hidden, h=ROW_HEIGHT, w_full, bg, bor
 - Uncached rows: each cell shows `"…"` placeholder
 - Editing cell: shows `"text|"` with accent border
 - Selected cells: dashed border overlay via additional absolute div at selection edges
+- Mouse click hit-test converts screen x → content x with `x + horizontal_offset.get()` before scanning column widths
+
+### Undo/redo
+- `Cmd+Z` undoes, `Cmd+Shift+Z` redoes single-cell edits
+- `commit_edit` pushes `EditAction::CellEdit { row, col, old_value, new_value }` to `undo_stack` and clears `redo_stack`
+- Old value captured inside `state.update` closure before `file.edits.insert()`
+- `on_undo`/`on_redo` restore value in `file.edits` (removing key if restoring to original/empty) and update `row_cache`
+- `BatchCellEdit` and `Structural` variants are no-ops in current undo/redo handlers
 
 ### Scrollbar corner gap
 When both scrollbars are present, each is shortened by `SCROLLBAR_SIZE + SCROLLBAR_MARGIN * 2` (= 12px) to prevent overlap in the bottom-right corner.
@@ -462,7 +470,7 @@ Use this order when debugging the app:
 - **Duplicate `ensure_rows_cached` call**: Called twice with identical arguments in uniform_list processor (table.rs).
 - **Two file-open implementations**: `Colomin::open_file_async` (main.rs) and `TableView::on_t_open_file` (table.rs) are ~160 lines of near-identical code.
 - **Save re-open inconsistency**: `Colomin::on_save` re-opens async, `TableView::on_t_save_file` re-opens sync.
-- **Undo/redo not implemented**: `undo_stack` and `redo_stack` fields exist in AppState but are never pushed to or popped from.
+- **Undo/redo only covers `CellEdit`**: `EditAction::BatchCellEdit` and `EditAction::Structural` variants exist but `on_undo`/`on_redo` are no-ops for them. Only single-cell commits via `commit_edit` are tracked.
 - **Sort trigger via toast_message**: Context menu sort sets `toast_message = "sort-asc:<col>"` as a string signal. No consumer visible in current code.
 - **Unused dependencies**: `parking_lot` and `unicode-segmentation` in Cargo.toml appear unused in source.
 
