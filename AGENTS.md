@@ -399,6 +399,63 @@ If no filter: skip first step. If no sort: skip second step. Identity when neith
 - `ThemeColors` has 17 `Hsla` fields: `bg`, `surface`, `border`, `text_primary`, `text_secondary`, `text_tertiary`, `accent`, `accent_hover`, `accent_text`, `accent_subtle`, `edited`, `hover_row`, `danger`, `status_bar_bg`, `gutter_bg`, `line_number`, `selection`
 - Accent color from Zed's `players[0].cursor`
 
+## Debugging workflow
+
+Use this order when debugging the app:
+
+1. Reproduce in the correct runtime.
+   - Use `cargo run -- /path/to/file.csv` for parser, state, selection, and normal UI issues.
+   - Use `./scripts/bundle.sh` and `/Applications/Colomin.app` for Finder integration, bundle, icon, and Info.plist behavior.
+   - Use `/tmp/wide_test.csv` first for horizontal scroll and layout regressions.
+
+2. Classify the bug before editing.
+   - `src/ui/table.rs` — scrolling, rendering, selection, editing, context menu, scrollbar drag
+   - `src/main.rs` — app lifecycle, Finder queue, CLI open, root view wiring
+   - `src/state/mod.rs` — selection model, cache, sort/filter state, undo/redo
+   - `src/csv_engine/parser.rs` / `src/csv_engine/writer.rs` — indexing, chunk reads, search/sort/filter, save
+
+3. Check known GPUI pitfalls first for UI bugs.
+   - Horizontal scroll bugs usually mean `horizontal_offset`, absolute-positioned inner content, or non-Capture wheel handling.
+   - Drag bugs usually mean hitbox-scoped div mouse handlers were used where `canvas` + `window.on_mouse_event` is required.
+   - Missing scrollbars usually mean first-render `bounds()` is `0x0` and `scrollbar_initialized` has not re-triggered layout yet.
+   - `ScrollHandle::set_offset()` does not notify; call `window.refresh()` from window-level handlers.
+
+4. Instrument subsystem boundaries, not every render path.
+   - Log file open start/finish, loading progress updates, first chunk cache fill, and cache misses in `ensure_rows_cached()`.
+   - Log selection anchor/focus transitions, stats task start/finish, and stale stats result suppression.
+   - Log horizontal offset changes, viewport width, content width, and scrollbar bounds when debugging layout.
+
+5. Verify invariants after each suspect transition.
+   - `horizontal_offset` stays clamped to `0..=max_x`.
+   - Visible rows stay within `effective_row_count()`.
+   - Row cache keys are virtual row indices, not actual source rows.
+   - Cached rows have the expected column count.
+   - Selection anchor/focus remain in bounds.
+   - Async results still match the current file or selection before applying state updates.
+
+6. Compare duplicated flows before fixing symptoms.
+   - File open logic exists in both `Colomin::open_file_async` and `TableView::on_t_open_file`.
+   - Save/reload behavior also differs between root and table paths.
+   - If behavior is inconsistent across Cmd+O, CLI open, and Finder open, inspect both implementations first.
+
+7. Fix the owning layer.
+   - Parser/indexing bug: fix parser or state mapping, not table rendering.
+   - Scroll/layout bug: fix GPUI layout or event handling, not cache behavior.
+   - Finder bug: fix queue/decode/open flow, not generic CSV logic unless both paths are broken.
+
+8. Prefer tests below the UI layer.
+   - Add tests for delimiter detection, row offsets, chunk reads, save round-trips, sort/filter mapping, and selection helpers.
+   - Use manual verification for GPUI scroll, drag, and layout behavior.
+
+9. Verify with a short manual script.
+   - Open the smallest CSV that reproduces the bug.
+   - Re-run the exact interaction.
+   - Verify no regression in open, edit, scroll, and save flows.
+
+10. Remove temporary debug noise.
+   - Keep only logs or assertions that help future debugging.
+   - Delete one-off prints once the fix is confirmed.
+
 ## Known issues & tech debt
 
 - **Unbounded row cache**: `HashMap<usize, Vec<String>>` never evicts. Will consume unbounded memory on large files. LRU plan in `plans/plan.md`.
