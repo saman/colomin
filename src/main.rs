@@ -551,6 +551,8 @@ fn main() {
             KeyBinding::new("delete", table::Delete, Some("TableView")),
             KeyBinding::new("backspace", table::Delete, Some("TableView")),
             KeyBinding::new("cmd-c", table::Copy, Some("TableView")),
+            KeyBinding::new("cmd-z", table::Undo, Some("TableView")),
+            KeyBinding::new("cmd-shift-z", table::Redo, Some("TableView")),
             KeyBinding::new("cmd-o", table::TOpenFile, Some("TableView")),
             KeyBinding::new("cmd-s", table::TSaveFile, Some("TableView")),
             KeyBinding::new("cmd-t", table::TCycleTheme, Some("TableView")),

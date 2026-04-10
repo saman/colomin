@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use crate::csv_engine::{self, parser};
-use crate::state::{AppState, CellCoord, SelectionType, SortDirection, SortState};
+use crate::state::{AppState, CellCoord, EditAction, SelectionType, SortDirection, SortState};
 
 const ROW_HEIGHT: f32 = 28.0;
 const ROW_NUMBER_WIDTH: f32 = 50.0;
@@ -304,19 +304,95 @@ impl TableView {
 
     fn commit_edit(&mut self, cx: &mut Context<Self>) {
         if let Some((row, col, ref text)) = self.editing {
-            let text = text.clone();
+            let new_value = text.clone();
             self.state.update(cx, |s, _| {
+                // Capture old value before overwriting (from edits map, then cache)
+                let old_value = s.file.as_ref()
+                    .and_then(|f| f.edits.get(&(row, col)).cloned())
+                    .or_else(|| s.row_cache.get(&row).and_then(|r| r.get(col)).cloned())
+                    .unwrap_or_default();
                 if let Some(ref mut file) = s.file {
-                    file.edits.insert((row, col), text.clone());
+                    file.edits.insert((row, col), new_value.clone());
                 }
                 if let Some(cached) = s.row_cache.get_mut(&row) {
-                    if col < cached.len() { cached[col] = text; }
+                    if col < cached.len() { cached[col] = new_value.clone(); }
                 }
                 s.cache_version += 1;
                 s.editing_cell = None;
+                // Push to undo stack only if value changed
+                if old_value != new_value {
+                    s.undo_stack.push(EditAction::CellEdit { row, col, old_value, new_value });
+                    s.redo_stack.clear();
+                }
             });
         }
         self.editing = None;
+        cx.notify();
+    }
+
+    fn on_undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.is_some() { self.cancel_edit(cx); return; }
+        self.state.update(cx, |s, _| {
+            let action = match s.undo_stack.pop() {
+                Some(a) => a,
+                None => return,
+            };
+            match &action {
+                EditAction::CellEdit { row, col, old_value, .. } => {
+                    let (r, c) = (*row, *col);
+                    if let Some(ref mut file) = s.file {
+                        if old_value.is_empty() {
+                            file.edits.remove(&(r, c));
+                        } else {
+                            file.edits.insert((r, c), old_value.clone());
+                        }
+                    }
+                    if let Some(cached) = s.row_cache.get_mut(row) {
+                        if *col < cached.len() { cached[*col] = old_value.clone(); }
+                    }
+                    // Move selection to undone cell
+                    s.selection_anchor = Some(CellCoord { row: r, col: c });
+                    s.selection_focus = Some(CellCoord { row: r, col: c });
+                    s.selection_type = Some(SelectionType::Cell);
+                }
+                EditAction::BatchCellEdit { .. } | EditAction::Structural { .. } => {}
+            }
+            s.redo_stack.push(action);
+            s.cache_version += 1;
+        });
+        cx.notify();
+    }
+
+    fn on_redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.is_some() { self.cancel_edit(cx); return; }
+        self.state.update(cx, |s, _| {
+            let action = match s.redo_stack.pop() {
+                Some(a) => a,
+                None => return,
+            };
+            match &action {
+                EditAction::CellEdit { row, col, new_value, .. } => {
+                    let (r, c) = (*row, *col);
+                    if let Some(ref mut file) = s.file {
+                        if new_value.is_empty() {
+                            file.edits.remove(&(r, c));
+                        } else {
+                            file.edits.insert((r, c), new_value.clone());
+                        }
+                    }
+                    if let Some(cached) = s.row_cache.get_mut(row) {
+                        if *col < cached.len() { cached[*col] = new_value.clone(); }
+                    }
+                    // Move selection to redone cell
+                    s.selection_anchor = Some(CellCoord { row: r, col: c });
+                    s.selection_focus = Some(CellCoord { row: r, col: c });
+                    s.selection_type = Some(SelectionType::Cell);
+                }
+                EditAction::BatchCellEdit { .. } | EditAction::Structural { .. } => {}
+            }
+            s.undo_stack.push(action);
+            s.cache_version += 1;
+        });
         cx.notify();
     }
 
@@ -1042,13 +1118,16 @@ impl Render for TableView {
                 let mut items = Vec::new();
                 for ri in range {
                     let se = this.state.clone();
+                    let h_off_rc = this.horizontal_offset.clone();
                     items.push(
                         this.render_row_el(ri, cx)
                             .cursor_pointer()
                             .on_mouse_down(MouseButton::Left, {
                                 let se = se.clone();
+                                let h_off_rc = h_off_rc.clone();
                                 move |ev, _, cx| {
-                                    let x = ev.position.x.as_f32();
+                                    // Adjust screen x by horizontal scroll offset to get content-space x
+                                    let x = ev.position.x.as_f32() + h_off_rc.get();
                                     if x < ROW_NUMBER_WIDTH {
                                         se.update(cx, |s, _| {
                                             if ev.modifiers.platform {
@@ -1081,8 +1160,10 @@ impl Render for TableView {
                             })
                             .on_mouse_down(MouseButton::Right, {
                                 let se = se.clone();
+                                let h_off_rc = h_off_rc.clone();
                                 move |ev, _, cx| {
-                                    let x = ev.position.x.as_f32();
+                                    // Adjust screen x by horizontal scroll offset to get content-space x
+                                    let x = ev.position.x.as_f32() + h_off_rc.get();
                                     let y = ev.position.y.as_f32();
                                     let st = se.read(cx);
                                     let mut cx2 = ROW_NUMBER_WIDTH; let mut cc = 0;
@@ -1281,6 +1362,8 @@ impl Render for TableView {
             .on_action(cx.listener(Self::on_escape))
             .on_action(cx.listener(Self::on_copy))
             .on_action(cx.listener(Self::on_delete))
+            .on_action(cx.listener(Self::on_undo))
+            .on_action(cx.listener(Self::on_redo))
             .on_action(cx.listener(Self::on_enter))
             .on_action(cx.listener(Self::on_select_up))
             .on_action(cx.listener(Self::on_select_down))
@@ -1296,7 +1379,8 @@ impl Render for TableView {
                 if this.scrollbar_drag.get().is_some() { return; }
                 let st = this.state.read(cx);
                 if !st.is_dragging { return; }
-                let x = ev.position.x.as_f32();
+                // Adjust screen x by horizontal scroll offset to get content-space x
+                let x = ev.position.x.as_f32() + this.horizontal_offset.get();
                 let y = ev.position.y.as_f32();
                 let row_y = y - HEADER_HEIGHT;
                 if row_y < 0.0 { return; }
