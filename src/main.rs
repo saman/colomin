@@ -1,17 +1,16 @@
 mod csv_engine;
+mod file_open;
 mod state;
 mod ui;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU32, Ordering};
 
 use anyhow;
 use gpui::*;
 use state::AppState;
 use ui::status_bar::StatusBar;
 use ui::table::{self, TableView};
-use ui::theme::ThemeColors;
 
 actions!(colomin, [OpenFile, Quit, SaveFile, CycleTheme]);
 
@@ -69,236 +68,9 @@ struct Colomin {
 }
 
 impl Colomin {
-    /// Apply an index result to the app state. Called from both sync and async paths.
-    fn apply_index_result_to_state(
-        state: &mut AppState,
-        path: &str,
-        index_result: csv_engine::parser::IndexResult,
-    ) {
-        let file_path = PathBuf::from(path);
-        let col_count = index_result.columns.len();
-        let metadata = csv_engine::types::CsvMetadata {
-            path: path.to_string(),
-            columns: index_result.columns.clone(),
-            total_rows: index_result.total_rows,
-            file_size_bytes: index_result.file_size_bytes,
-            delimiter: index_result.delimiter,
-            has_headers: index_result.has_headers,
-        };
-
-        // Pre-load first chunk before setting state (so it's available on first render)
-        let first_chunk = csv_engine::parser::read_chunk_with_delim(
-            &file_path, &index_result.row_offsets, &std::collections::HashMap::new(),
-            0, 200, col_count, index_result.delimiter,
-        );
-
-        state.file = Some(state::OpenFile {
-            original_columns: metadata.columns.clone(),
-            metadata,
-            row_offsets: index_result.row_offsets,
-            edits: std::collections::HashMap::new(),
-            file_path,
-            delimiter: index_result.delimiter,
-            row_order: None,
-            inserted_rows: Vec::new(),
-            col_order: None,
-            inserted_columns: Vec::new(),
-            inserted_col_values: std::collections::HashMap::new(),
-            original_col_count: col_count,
-            sort_permutation: None,
-            filter_indices: None,
-        });
-        state.unfiltered_row_count = index_result.total_rows;
-        state.sort_state = None;
-        state.has_filter = false;
-        state.is_loading = false;
-        state.loading_message.clear();
-        state.clear_cache();
-        state.clear_selection();
-
-        if let Ok(chunk) = first_chunk {
-            for (i, row) in chunk.rows.into_iter().enumerate() {
-                state.cache_row(chunk.start_index + i, row);
-            }
-            state.cache_version += 1;
-        }
-    }
-
-    /// Open file synchronously (for small files / initial load from CLI)
-    fn open_file_sync(&mut self, path: &str, cx: &mut Context<Self>) {
-        let file_path = PathBuf::from(path);
-        let result = csv_engine::parser::index_file(&file_path);
-        match result {
-            Ok(index_result) => {
-                let p = path.to_string();
-                self.state.update(cx, |state, _| {
-                    Self::apply_index_result_to_state(state, &p, index_result);
-                });
-                cx.notify();
-            }
-            Err(e) => eprintln!("Failed to open file: {}", e),
-        }
-    }
-
     /// Open file asynchronously — ALL I/O on background thread
     fn open_file_async(&mut self, path: String, cx: &mut Context<Self>) {
-        let filename = std::path::Path::new(&path)
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| path.clone());
-
-        // Shared atomic progress: 0–100 stored as u32 bits of f32
-        let progress_atomic = Arc::new(AtomicU32::new(0));
-        let progress_for_thread = progress_atomic.clone();
-        let progress_for_poll = progress_atomic.clone();
-
-        self.state.update(cx, |s, _| {
-            s.is_loading = true;
-            s.loading_progress = 0.0;
-            s.loading_message = filename.clone();
-        });
-        cx.notify();
-
-        let se = self.state.clone();
-        let path_clone = path.clone();
-
-        // Poll progress every 50ms and push to AppState so the bar animates.
-        let se_poll = se.clone();
-        cx.spawn(async move |_this, cx| {
-            loop {
-                cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
-                let raw = progress_for_poll.load(Ordering::Relaxed);
-                let progress = f32::from_bits(raw);
-                let still_loading = {
-                    let mut loading = true;
-                    let _ = se_poll.update(cx, |s, cx| {
-                        if s.is_loading {
-                            s.loading_progress = progress;
-                            cx.notify();
-                        } else {
-                            loading = false;
-                        }
-                    });
-                    loading
-                };
-                if !still_loading { break; }
-            }
-        }).detach();
-
-        // Spawn the I/O work on a dedicated OS thread and use a oneshot channel
-        // to receive the result without blocking the main/executor thread.
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let result = (|| {
-                let index_result = csv_engine::parser::index_file_with_progress(
-                    &PathBuf::from(&path_clone),
-                    move |done, total| {
-                        if total > 0 {
-                            let p = (done as f32 / total as f32).min(1.0);
-                            progress_for_thread.store(p.to_bits(), Ordering::Relaxed);
-                        }
-                    },
-                )?;
-                let first_chunk = csv_engine::parser::read_chunk_with_delim(
-                    &PathBuf::from(&path_clone),
-                    &index_result.row_offsets,
-                    &std::collections::HashMap::new(),
-                    0, 200,
-                    index_result.columns.len(),
-                    index_result.delimiter,
-                ).ok();
-                Ok::<_, String>((index_result, first_chunk))
-            })();
-            let _ = tx.send(result);
-        });
-
-        cx.spawn(async move |_this, cx| {
-            let start = std::time::Instant::now();
-
-            // Poll until the background thread sends back the result.
-            // Each iteration yields to the executor so the UI stays responsive.
-            let result = loop {
-                match rx.try_recv() {
-                    Ok(r) => break r,
-                    Err(std::sync::mpsc::TryRecvError::Empty) => {
-                        cx.background_executor()
-                            .timer(std::time::Duration::from_millis(50))
-                            .await;
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        break Err("I/O thread panicked".into());
-                    }
-                }
-            };
-
-            // Ensure loading screen is visible for at least 400ms
-            let elapsed = start.elapsed();
-            let min_display = std::time::Duration::from_millis(400);
-            if elapsed < min_display {
-                cx.background_executor().timer(min_display - elapsed).await;
-            }
-
-            match result {
-                Ok((index_result, first_chunk)) => {
-                    let _ = se.update(cx, |state, cx| {
-                        let file_path = PathBuf::from(&path);
-                        let col_count = index_result.columns.len();
-                        let metadata = csv_engine::types::CsvMetadata {
-                            path: path.clone(),
-                            columns: index_result.columns.clone(),
-                            total_rows: index_result.total_rows,
-                            file_size_bytes: index_result.file_size_bytes,
-                            delimiter: index_result.delimiter,
-                            has_headers: index_result.has_headers,
-                        };
-
-                        state.file = Some(state::OpenFile {
-                            original_columns: metadata.columns.clone(),
-                            metadata,
-                            row_offsets: index_result.row_offsets,
-                            edits: std::collections::HashMap::new(),
-                            file_path,
-                            delimiter: index_result.delimiter,
-                            row_order: None,
-                            inserted_rows: Vec::new(),
-                            col_order: None,
-                            inserted_columns: Vec::new(),
-                            inserted_col_values: std::collections::HashMap::new(),
-                            original_col_count: col_count,
-                            sort_permutation: None,
-                            filter_indices: None,
-                        });
-                        state.unfiltered_row_count = index_result.total_rows;
-                        state.sort_state = None;
-                        state.has_filter = false;
-                        state.is_loading = false;
-                        state.loading_progress = 1.0;
-                        state.loading_message.clear();
-                        state.clear_cache();
-                        state.clear_selection();
-
-                        if let Some(chunk) = first_chunk {
-                            for (i, row) in chunk.rows.into_iter().enumerate() {
-                                state.cache_row(chunk.start_index + i, row);
-                            }
-                            state.cache_version += 1;
-                        }
-
-                        cx.notify();
-                    });
-                }
-                Err(e) => {
-                    eprintln!("Failed to open file: {}", e);
-                    let _ = se.update(cx, |s, cx| {
-                        s.is_loading = false;
-                        s.loading_progress = 0.0;
-                        s.loading_message.clear();
-                        cx.notify();
-                    });
-                }
-            }
-        })
-        .detach();
+        file_open::open_file_async(self.state.clone(), path, cx);
     }
 
     fn on_open_file(&mut self, _: &OpenFile, _window: &mut Window, cx: &mut Context<Self>) {
@@ -309,7 +81,7 @@ impl Colomin {
             .pick_file();
 
         if let Some(path) = path {
-            let path_str = path.to_string_lossy().to_string();
+            let path_str = path.to_string_lossy().into_owned();
             self.open_file_async(path_str, cx);
         }
     }
@@ -324,9 +96,8 @@ impl Colomin {
             None => return,
         };
         let target_path = file.file_path.clone();
-        let headers: Vec<String> = file.metadata.columns.iter().map(|c| c.name.clone()).collect();
-        let save_result = csv_engine::writer::save_file(file, &target_path, &headers);
-        drop(state);
+        let save_result = csv_engine::writer::save_file(file, &target_path);
+        let _ = state;
 
         match save_result {
             Ok(()) => {
@@ -352,14 +123,13 @@ actions!(context_menu, [CmCopy, CmDelete, CmSortAsc, CmSortDesc, CmInsertRowAbov
 impl Colomin {
     fn render_context_menu(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         let state = self.state.read(cx);
-        let (mx, my, row, col) = state.context_menu?;
+        let (mx, my, _row, col) = state.context_menu?;
         let colors = state.current_theme();
-        let has_selection = state.selection_type.is_some();
         let col_name = state.file.as_ref()
             .and_then(|f| f.metadata.columns.get(col))
             .map(|c| c.name.clone())
             .unwrap_or_default();
-        drop(state);
+        let _ = state;
 
         let se = self.state.clone();
 
@@ -409,11 +179,10 @@ impl Colomin {
             })))
             .child(div().h(px(1.0)).my(px(4.0)).bg(colors.border)) // separator
             .child(menu_item("cm-sort-asc", format!("Sort {} \u{2191}", col_name), se.clone(), Box::new(move |s| {
-                // Sort will be triggered after menu closes
-                s.toast_message = Some(format!("sort-asc:{}", col));
+                s.pending_sort = Some((col, true));
             })))
             .child(menu_item("cm-sort-desc", format!("Sort {} \u{2193}", col_name), se.clone(), Box::new(move |s| {
-                s.toast_message = Some(format!("sort-desc:{}", col));
+                s.pending_sort = Some((col, false));
             })));
 
         Some(menu)
@@ -425,20 +194,21 @@ impl Render for Colomin {
         cx.observe(&self.state, |_this, _state, cx| cx.notify()).detach();
 
         let state = self.state.read(cx);
-        let has_menu = state.context_menu.is_some();
         let has_file = state.file.is_some();
         let is_loading = state.is_loading;
 
         // Update window title with filename when a file is open
         let title = if let Some(ref f) = state.file {
             let name = f.file_path.file_name()
-                .map(|n| n.to_string_lossy().to_string())
+                .and_then(|n| n.to_str().map(|s| s.to_string()))
                 .unwrap_or_else(|| "Colomin".into());
-            format!("{} — Colomin", name)
+            let mut title = name;
+            title.push_str(" — Colomin");
+            title
         } else {
             "Colomin".into()
         };
-        drop(state);
+        let _ = state;
 
         window.set_window_title(&title);
         let se = self.state.clone();

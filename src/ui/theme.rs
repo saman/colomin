@@ -248,6 +248,7 @@ fn zed_style_to_colors(style: &ZedStyle, appearance: ThemeAppearance) -> ThemeCo
 // ── Public API ──
 
 /// Parse a Zed theme JSON string into a list of themes
+#[must_use]
 pub fn parse_zed_theme(json: &str) -> Result<Vec<ZedTheme>, String> {
     let file: ZedThemeFile =
         serde_json::from_str(json).map_err(|e| format!("Failed to parse theme: {}", e))?;
@@ -272,6 +273,7 @@ pub fn parse_zed_theme(json: &str) -> Result<Vec<ZedTheme>, String> {
 }
 
 /// Load a Zed theme from a file path
+#[must_use]
 pub fn load_zed_theme_file(path: &Path) -> Result<Vec<ZedTheme>, String> {
     let json =
         std::fs::read_to_string(path).map_err(|e| format!("Failed to read theme file: {}", e))?;

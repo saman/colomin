@@ -466,13 +466,8 @@ Use this order when debugging the app:
 
 ## Known issues & tech debt
 
-- **Unbounded row cache**: `HashMap<usize, Vec<String>>` never evicts. Will consume unbounded memory on large files. LRU plan in `plans/plan.md`.
-- **Duplicate `ensure_rows_cached` call**: Called twice with identical arguments in uniform_list processor (table.rs).
-- **Two file-open implementations**: `Colomin::open_file_async` (main.rs) and `TableView::on_t_open_file` (table.rs) are ~160 lines of near-identical code.
-- **Save re-open inconsistency**: `Colomin::on_save` re-opens async, `TableView::on_t_save_file` re-opens sync.
-- **Undo/redo only covers `CellEdit`**: `EditAction::BatchCellEdit` and `EditAction::Structural` variants exist but `on_undo`/`on_redo` are no-ops for them. Only single-cell commits via `commit_edit` are tracked.
-- **Sort trigger via toast_message**: Context menu sort sets `toast_message = "sort-asc:<col>"` as a string signal. No consumer visible in current code.
-- **Unused dependencies**: `parking_lot` and `unicode-segmentation` in Cargo.toml appear unused in source.
+- **Row cache policy is FIFO, not true LRU**: Cache is now bounded (5000 rows) with FIFO eviction. True LRU would improve hit-rate during back-and-forth scrolling.
+- **Open flow ownership split**: File-open logic is now shared, but entry points still live in both root (`main.rs`) and table command handlers (`table/file_commands.rs`). Consider consolidating command wiring to a single owner.
 
 ## GPUI source reference
 

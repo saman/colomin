@@ -289,7 +289,7 @@ impl Render for StatusBar {
                 .into_any_element();
         }
 
-        let file = state.file.as_ref().unwrap();
+        let file = state.file.as_ref().expect("file should exist when rendering status bar");
         let row_count = state.effective_row_count();
         let col_count = state.col_count();
         let file_size = file.metadata.file_size_bytes;

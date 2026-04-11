@@ -8,7 +8,6 @@ use crate::state::{ColSource, OpenFile, RowSource};
 pub fn save_file(
     open_file: &OpenFile,
     target_path: &Path,
-    _headers: &[String],
 ) -> Result<(), String> {
     let temp_path = target_path.with_extension("csv.tmp");
     let out_file =

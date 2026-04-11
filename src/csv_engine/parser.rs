@@ -80,10 +80,12 @@ pub fn detect_delimiter(path: &Path) -> u8 {
     best_delim
 }
 
+#[must_use]
 pub fn index_file(path: &Path) -> Result<IndexResult, String> {
     index_file_with_progress(path, |_, _| {})
 }
 
+#[must_use]
 pub fn index_file_with_progress<F>(path: &Path, on_progress: F) -> Result<IndexResult, String>
 where
     F: Fn(u64, u64),
@@ -323,59 +325,15 @@ pub fn search_rows(
     col_count: usize,
     delimiter: u8,
 ) -> Result<SearchResult, String> {
-    let query_lower = query.to_lowercase();
-    let mut matching_indices: Vec<usize> = Vec::new();
-
-    let file = File::open(path).map_err(|e| format!("Failed to open file: {}", e))?;
-    let mut buf_reader = BufReader::new(file);
-
-    if !row_offsets.is_empty() {
-        buf_reader
-            .seek(SeekFrom::Start(row_offsets[0]))
-            .map_err(|e| format!("Failed to seek: {}", e))?;
-    }
-
-    let mut csv_reader = csv::ReaderBuilder::new()
-        .has_headers(false)
-        .flexible(true)
-        .delimiter(delimiter)
-        .from_reader(buf_reader);
-
-    for (row_idx, result) in csv_reader.records().enumerate() {
-        if row_idx >= row_offsets.len() {
-            break;
-        }
-        let record = result.map_err(|e| format!("Failed to read record: {}", e))?;
-
-        let cols_to_check: Box<dyn Iterator<Item = usize>> = match column_index {
-            Some(c) => Box::new(std::iter::once(c)),
-            None => Box::new(0..col_count),
-        };
-
-        let mut found = false;
-        for col_idx in cols_to_check {
-            let value = if let Some(edited) = edits.get(&(row_idx, col_idx)) {
-                edited.as_str()
-            } else {
-                record.get(col_idx).unwrap_or("")
-            };
-
-            if value.to_lowercase().contains(&query_lower) {
-                found = true;
-                break;
-            }
-        }
-
-        if found {
-            matching_indices.push(row_idx);
-        }
-    }
-
-    let total_matches = matching_indices.len();
-    Ok(SearchResult {
-        row_indices: matching_indices,
-        total_matches,
-    })
+    crate::csv_engine::query::search_rows(
+        path,
+        row_offsets,
+        edits,
+        query,
+        column_index,
+        col_count,
+        delimiter,
+    )
 }
 
 pub fn filter_rows(
@@ -386,67 +344,7 @@ pub fn filter_rows(
     _col_count: usize,
     delimiter: u8,
 ) -> Result<Vec<usize>, String> {
-    if criteria.is_empty() {
-        return Ok((0..row_offsets.len()).collect());
-    }
-
-    let file = File::open(path).map_err(|e| format!("Failed to open file: {}", e))?;
-    let mut buf_reader = BufReader::new(file);
-
-    if !row_offsets.is_empty() {
-        buf_reader
-            .seek(SeekFrom::Start(row_offsets[0]))
-            .map_err(|e| format!("Failed to seek: {}", e))?;
-    }
-
-    let mut csv_reader = csv::ReaderBuilder::new()
-        .has_headers(false)
-        .flexible(true)
-        .delimiter(delimiter)
-        .from_reader(buf_reader);
-
-    let mut matching: Vec<usize> = Vec::new();
-
-    for (row_idx, result) in csv_reader.records().enumerate() {
-        if row_idx >= row_offsets.len() {
-            break;
-        }
-        let record = result.map_err(|e| format!("Failed to read record: {}", e))?;
-
-        let all_match = criteria.iter().all(|c| {
-            let value = if let Some(edited) = edits.get(&(row_idx, c.column_index)) {
-                edited.clone()
-            } else {
-                record.get(c.column_index).unwrap_or("").to_string()
-            };
-            matches_filter(&value, c)
-        });
-
-        if all_match {
-            matching.push(row_idx);
-        }
-    }
-
-    Ok(matching)
-}
-
-fn matches_filter(value: &str, criteria: &FilterCriteria) -> bool {
-    let val_lower = value.to_lowercase();
-    let crit_lower = criteria.value.to_lowercase();
-
-    match criteria.operator {
-        FilterOp::Contains => val_lower.contains(&crit_lower),
-        FilterOp::Equals => val_lower == crit_lower,
-        FilterOp::StartsWith => val_lower.starts_with(&crit_lower),
-        FilterOp::GreaterThan => match (value.parse::<f64>(), criteria.value.parse::<f64>()) {
-            (Ok(a), Ok(b)) => a > b,
-            _ => val_lower > crit_lower,
-        },
-        FilterOp::LessThan => match (value.parse::<f64>(), criteria.value.parse::<f64>()) {
-            (Ok(a), Ok(b)) => a < b,
-            _ => val_lower < crit_lower,
-        },
-    }
+    crate::csv_engine::query::filter_rows(path, row_offsets, edits, criteria, delimiter)
 }
 
 pub fn sort_rows(

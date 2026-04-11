@@ -878,11 +878,9 @@ dependencies = [
  "csv",
  "gpui",
  "gpui_platform",
- "parking_lot",
  "rfd",
  "serde",
  "serde_json",
- "unicode-segmentation",
 ]
 
 [[package]]
