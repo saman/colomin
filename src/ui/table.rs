@@ -31,6 +31,10 @@ pub struct TableView {
     /// Managed independently from the uniform_list which only handles vertical scroll.
     horizontal_offset: Rc<Cell<f32>>,
     scrollbar_initialized: bool,
+    /// Column being resized (index), shared with canvas drag listeners.
+    column_resize: Rc<Cell<Option<usize>>>,
+    /// (start_mouse_x_in_window, start_column_width) captured on resize mouse-down.
+    column_resize_start: Rc<Cell<Option<(f32, f32)>>>,
 }
 
 impl TableView {
@@ -44,6 +48,8 @@ impl TableView {
             scrollbar_drag: Rc::new(Cell::new(None)),
             horizontal_offset: Rc::new(Cell::new(0.0)),
             scrollbar_initialized: false,
+            column_resize: Rc::new(Cell::new(None)),
+            column_resize_start: Rc::new(Cell::new(None)),
         }
     }
 
@@ -858,6 +864,8 @@ impl TableView {
 
         // Horizontal offset (positive = scrolled right)
         let h_off = self.horizontal_offset.get();
+        let col_resize = self.column_resize.clone();
+        let col_resize_start = self.column_resize_start.clone();
 
         // Inner row: absolutely positioned so negative left doesn't affect parent layout
         let mut inner = div().flex().flex_shrink_0().h_full()
@@ -875,18 +883,35 @@ impl TableView {
             let tc = if is_sel { colors.accent } else { colors.text_secondary };
             let bg = if is_sel { colors.accent_subtle } else { colors.surface };
             let se = self.state.clone();
+            let cr = col_resize.clone();
+            let cr_click = col_resize.clone();
+            let crs = col_resize_start.clone();
+            // Resize handle: 5px wide, absolute right edge, col-resize cursor
+            let resize_handle = div()
+                .id(ElementId::NamedInteger("rh".into(), ci as u64))
+                .absolute().right(px(0.)).top_0().h_full().w(px(5.0))
+                .cursor_col_resize()
+                .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, _, _| {
+                    cr.set(Some(ci));
+                    crs.set(Some((ev.position.x.as_f32(), w)));
+                });
             inner = inner.child(
                 div().id(ElementId::NamedInteger("h".into(), ci as u64))
+                    .relative()  // needed for absolute resize handle
                     .flex_shrink_0().w(px(w)).h_full().flex().items_center().pl(px(8.0))
                     .bg(bg).text_color(tc)
                     .cursor_pointer().truncate().child(name)
-                    .on_click(move |_, _, cx| {
+                    // on_mouse_down fires after child resize_handle.on_mouse_down (bubble order);
+                    // if column_resize is already set the click started on the resize handle.
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        if cr_click.get().is_some() { return; }
                         se.update(cx, |s, _| {
                             s.selected_columns.clear(); s.selected_columns.push(ci);
                             s.selection_type = Some(SelectionType::Column);
                             s.selection_anchor = None; s.selection_focus = None; s.selected_rows.clear();
                         });
-                    }),
+                    })
+                    .child(resize_handle),
             );
         }
 
@@ -1308,7 +1333,38 @@ impl Render for TableView {
         let sh_for_canvas = self.scroll_handle.clone();
         let h_off_for_canvas = self.horizontal_offset.clone();
         let cw_for_canvas = content_w;
+        let col_resize_for_canvas = self.column_resize.clone();
+        let col_resize_start_for_canvas = self.column_resize_start.clone();
+        let state_for_resize = self.state.clone();
         let scrollbar_canvas = canvas(|_, _, _| {}, move |_, _, window, _| {
+            // --- Column resize drag ---
+            let cr_move = col_resize_for_canvas.clone();
+            let crs_move = col_resize_start_for_canvas.clone();
+            let state_move = state_for_resize.clone();
+            window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                if phase != DispatchPhase::Capture { return; }
+                let col_idx = match cr_move.get() { Some(c) => c, None => return };
+                if !event.dragging() { return; }
+                let (start_x, start_w) = match crs_move.get() { Some(s) => s, None => return };
+                let delta = event.position.x.as_f32() - start_x;
+                let new_w = (start_w + delta).max(30.0);
+                state_move.update(cx, |s, _| {
+                    s.column_widths.insert(col_idx, new_w);
+                });
+                window.refresh();
+            });
+
+            let cr_up = col_resize_for_canvas.clone();
+            let crs_up = col_resize_start_for_canvas.clone();
+            window.on_mouse_event(move |_event: &MouseUpEvent, phase, window, _| {
+                if phase != DispatchPhase::Capture { return; }
+                if cr_up.get().is_none() { return; }
+                cr_up.set(None);
+                crs_up.set(None);
+                window.refresh();
+            });
+
+            // --- Scrollbar drag ---
             // MouseMoveEvent: track drag position globally
             let drag_move = drag_for_canvas.clone();
             let sh_move = sh_for_canvas.clone();
