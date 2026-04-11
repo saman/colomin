@@ -22,7 +22,7 @@ pkill -f "Colomin" 2>/dev/null; sleep 0.5; open /Applications/Colomin.app --args
 /tmp/wide_test.csv
 ```
 
-Binary name is `colomin-gpui` (not `colomin`). Bundle at `target/release/Colomin.app`.
+Binary name is `colomin` for Rust builds. Bundled app executable is `Colomin` inside `target/release/Colomin.app`.
 
 ## Source layout
 

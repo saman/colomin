@@ -1,5 +1,5 @@
 [package]
-name = "colomin-gpui"
+name = "colomin"
 version = "0.1.0"
 edition = "2021"
 description = "A native CSV editor built with GPUI"

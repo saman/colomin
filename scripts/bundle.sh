@@ -7,7 +7,7 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="Colomin"
 BUNDLE_DIR="$PROJECT_DIR/target/release/$APP_NAME.app"
-BINARY_NAME="colomin-gpui"
+BINARY_NAME="Colomin"
 
 echo "Building release binary..."
 cargo build --release --manifest-path "$PROJECT_DIR/Cargo.toml"
@@ -17,8 +17,16 @@ rm -rf "$BUNDLE_DIR"
 mkdir -p "$BUNDLE_DIR/Contents/MacOS"
 mkdir -p "$BUNDLE_DIR/Contents/Resources"
 
-# Copy binary
-cp "$PROJECT_DIR/target/release/$BINARY_NAME" "$BUNDLE_DIR/Contents/MacOS/"
+# Copy binary and normalize the packaged executable name to Colomin.
+if [ -f "$PROJECT_DIR/target/release/colomin" ]; then
+    SRC_BINARY="$PROJECT_DIR/target/release/colomin"
+elif [ -f "$PROJECT_DIR/target/release/Colomin" ]; then
+    SRC_BINARY="$PROJECT_DIR/target/release/Colomin"
+else
+    echo "Error: no built executable found in target/release"
+    exit 1
+fi
+cp "$SRC_BINARY" "$BUNDLE_DIR/Contents/MacOS/$BINARY_NAME"
 
 # Copy Info.plist
 cp "$PROJECT_DIR/Info.plist" "$BUNDLE_DIR/Contents/"

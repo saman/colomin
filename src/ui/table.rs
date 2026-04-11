@@ -38,6 +38,112 @@ pub struct TableView {
 }
 
 impl TableView {
+    fn hit_test_col_from_content_x(state: &AppState, x_content: f32) -> usize {
+        if state.col_count() == 0 {
+            return 0;
+        }
+        let mut col_x = ROW_NUMBER_WIDTH;
+        let mut col = 0usize;
+        for c in 0..state.col_count() {
+            let w = state.column_width(c);
+            if x_content < col_x + w {
+                col = c;
+                break;
+            }
+            col_x += w;
+            col = c;
+        }
+        col
+    }
+
+    fn hit_test_row_from_window_y(&self, y_window: f32, total_rows: usize) -> Option<usize> {
+        if total_rows == 0 {
+            return None;
+        }
+
+        let sh = self.scroll_handle.0.borrow();
+        let viewport_h = sh.base_handle.bounds().size.height.as_f32();
+        let scroll_y = -sh.base_handle.offset().y.as_f32();
+        drop(sh);
+
+        if viewport_h <= 0.0 {
+            return None;
+        }
+
+        // Convert from window space to table-body local y, then add scroll offset
+        // to get absolute virtual row position.
+        let local_y = (y_window - HEADER_HEIGHT).clamp(0.0, (viewport_h - 1.0).max(0.0));
+        let row = ((local_y + scroll_y) / ROW_HEIGHT).floor().max(0.0) as usize;
+        Some(row.min(total_rows.saturating_sub(1)))
+    }
+
+    fn is_in_scrollbar_hit_region(
+        scroll_handle: &UniformListScrollHandle,
+        state: &AppState,
+        mouse_pos: Point<Pixels>,
+    ) -> bool {
+        const SCROLLBAR_SIZE: f32 = 8.0;
+        const SCROLLBAR_MARGIN: f32 = 2.0;
+
+        let sh = scroll_handle.0.borrow();
+        let bounds = sh.base_handle.bounds();
+        let max_y = sh.base_handle.max_offset().y.as_f32();
+        drop(sh);
+
+        let vp_w = bounds.size.width.as_f32();
+        let vp_h = bounds.size.height.as_f32();
+        if vp_w <= 0.0 || vp_h <= 0.0 {
+            return false;
+        }
+
+        let content_w = if let Some(file) = &state.file {
+            ROW_NUMBER_WIDTH
+                + file
+                    .metadata
+                    .columns
+                    .iter()
+                    .map(|c| state.column_width(c.index))
+                    .sum::<f32>()
+        } else {
+            0.0
+        };
+        let max_x = (content_w - vp_w).max(0.0);
+
+        let has_v_bar = max_y > 0.0;
+        let has_h_bar = max_x > 0.0;
+        if !has_v_bar && !has_h_bar {
+            return false;
+        }
+
+        let corner_gap = SCROLLBAR_SIZE + SCROLLBAR_MARGIN * 2.0;
+        let ox = bounds.origin.x.as_f32();
+        let oy = bounds.origin.y.as_f32();
+        let mx = mouse_pos.x.as_f32();
+        let my = mouse_pos.y.as_f32();
+
+        let in_v_bar = if has_v_bar {
+            let track_top = oy;
+            let track_bottom = oy + if has_h_bar { vp_h - corner_gap } else { vp_h };
+            let bar_left = ox + vp_w - SCROLLBAR_MARGIN - SCROLLBAR_SIZE;
+            let bar_right = ox + vp_w - SCROLLBAR_MARGIN;
+            mx >= bar_left && mx <= bar_right && my >= track_top && my <= track_bottom
+        } else {
+            false
+        };
+
+        let in_h_bar = if has_h_bar {
+            let track_left = ox;
+            let track_right = ox + if has_v_bar { vp_w - corner_gap } else { vp_w };
+            let bar_top = oy + vp_h - SCROLLBAR_MARGIN - SCROLLBAR_SIZE;
+            let bar_bottom = oy + vp_h - SCROLLBAR_MARGIN;
+            mx >= track_left && mx <= track_right && my >= bar_top && my <= bar_bottom
+        } else {
+            false
+        };
+
+        in_v_bar || in_h_bar
+    }
+
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         Self {
             state,
@@ -539,6 +645,42 @@ impl TableView {
     }
 
     fn on_copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
+        let preload_range = {
+            let state = self.state.read(cx);
+            match state.selection_type {
+                Some(SelectionType::Cell) => state.selection_range().map(|(mr, xr, _, _)| (mr, xr)),
+                Some(SelectionType::Row) => {
+                    if state.selected_rows.is_empty() {
+                        None
+                    } else {
+                        let min_row = *state.selected_rows.iter().min().unwrap_or(&0);
+                        let max_row = *state.selected_rows.iter().max().unwrap_or(&0);
+                        Some((min_row, max_row))
+                    }
+                }
+                Some(SelectionType::Column) => {
+                    let rows = state.effective_row_count();
+                    if rows == 0 { None } else { Some((0, rows - 1)) }
+                }
+                None => None,
+            }
+        };
+
+        if let Some((start, end)) = preload_range {
+            let all_cached = {
+                let state = self.state.read(cx);
+                (start..=end).all(|r| state.get_cached_row(r).is_some())
+            };
+            if !all_cached {
+                self.ensure_rows_cached(start, end.saturating_sub(start) + 1, cx);
+                self.state.update(cx, |s, _| {
+                    s.toast_message = Some("Selection is still loading. Try copy again in a moment.".to_string());
+                });
+                cx.notify();
+                return;
+            }
+        }
+
         let state = self.state.read(cx);
         let mut lines = Vec::new();
         match state.selection_type {
@@ -882,25 +1024,31 @@ impl TableView {
             let name = format!("{}{}", col.name, arrow);
             let tc = if is_sel { colors.accent } else { colors.text_secondary };
             let bg = if is_sel { colors.accent_subtle } else { colors.surface };
+            let resize_bar_hover = colors.accent;
             let se = self.state.clone();
             let cr = col_resize.clone();
             let cr_click = col_resize.clone();
             let crs = col_resize_start.clone();
-            // Resize handle: 5px wide, absolute right edge, col-resize cursor
+            // Resize handle: wider hit area, visible only on hover.
+            // Resize handle owns the column right border; hover changes its color.
+            let border_col = colors.border;
             let resize_handle = div()
                 .id(ElementId::NamedInteger("rh".into(), ci as u64))
-                .absolute().right(px(0.)).top_0().h_full().w(px(5.0))
+                .absolute().right(px(0.)).top_0().h_full().w(px(8.0))
+                .border_r_1().border_color(border_col)
                 .cursor_col_resize()
+                .hover(move |s| s.border_r_3().border_color(resize_bar_hover))
                 .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, _, _| {
                     cr.set(Some(ci));
                     crs.set(Some((ev.position.x.as_f32(), w)));
                 });
-            inner = inner.child(
-                div().id(ElementId::NamedInteger("h".into(), ci as u64))
+            let hdr_cell = div().id(ElementId::NamedInteger("h".into(), ci as u64))
                     .relative()  // needed for absolute resize handle
                     .flex_shrink_0().w(px(w)).h_full().flex().items_center().pl(px(8.0))
                     .bg(bg).text_color(tc)
-                    .cursor_pointer().truncate().child(name)
+                    .cursor_pointer().truncate().child(name);
+            inner = inner.child(
+                hdr_cell
                     // on_mouse_down fires after child resize_handle.on_mouse_down (bubble order);
                     // if column_resize is already set the click started on the resize handle.
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
@@ -963,8 +1111,11 @@ impl TableView {
         if cached.is_none() {
             for col in columns.iter() {
                 let w = state.column_width(col.index);
+                let is_sel = state.is_cell_selected(ri, col.index);
+                let cell_bg = if is_sel { colors.accent_subtle } else { row_bg };
                 inner = inner.child(
                     div().flex_shrink_0().w(px(w)).h_full()
+                        .bg(cell_bg)
                         .flex().items_center().pl(px(8.0))
                         .text_color(colors.text_tertiary)
                         .child("\u{2026}")
@@ -1139,21 +1290,30 @@ impl Render for TableView {
             "rows", total_rows,
             cx.processor(|this: &mut Self, range: Range<usize>, _: &mut Window, cx: &mut Context<Self>| {
                 this.ensure_rows_cached(range.start, range.end - range.start, cx);
-                this.ensure_rows_cached(range.start, range.end - range.start, cx);
                 let mut items = Vec::new();
                 for ri in range {
                     let se = this.state.clone();
                     let h_off_rc = this.horizontal_offset.clone();
+                    let sh_for_rows = this.scroll_handle.clone();
+                    let sb_drag_for_rows = this.scrollbar_drag.clone();
                     items.push(
                         this.render_row_el(ri, cx)
                             .cursor_pointer()
                             .on_mouse_down(MouseButton::Left, {
                                 let se = se.clone();
                                 let h_off_rc = h_off_rc.clone();
+                                let sh_for_rows = sh_for_rows.clone();
+                                let sb_drag_for_rows = sb_drag_for_rows.clone();
                                 move |ev, _, cx| {
+                                    if sb_drag_for_rows.get().is_some() { return; }
+                                    let st = se.read(cx);
+                                    if Self::is_in_scrollbar_hit_region(&sh_for_rows, &st, ev.position) {
+                                        return;
+                                    }
                                     // Adjust screen x by horizontal scroll offset to get content-space x
                                     let x = ev.position.x.as_f32() + h_off_rc.get();
                                     if x < ROW_NUMBER_WIDTH {
+                                        drop(st);
                                         se.update(cx, |s, _| {
                                             if ev.modifiers.platform {
                                                 if s.selected_rows.contains(&ri) { s.selected_rows.retain(|&r| r != ri); }
@@ -1165,9 +1325,7 @@ impl Render for TableView {
                                         });
                                         return;
                                     }
-                                    let st = se.read(cx);
-                                    let mut cx2 = ROW_NUMBER_WIDTH; let mut cc = 0;
-                                    for c in 0..st.col_count() { let w = st.column_width(c); if x < cx2 + w { cc = c; break; } cx2 += w; cc = c; }
+                                    let cc = Self::hit_test_col_from_content_x(&st, x);
                                     drop(st);
                                     se.update(cx, |s, _| {
                                         s.selection_type = Some(SelectionType::Cell);
@@ -1186,13 +1344,18 @@ impl Render for TableView {
                             .on_mouse_down(MouseButton::Right, {
                                 let se = se.clone();
                                 let h_off_rc = h_off_rc.clone();
+                                let sh_for_rows = sh_for_rows.clone();
+                                let sb_drag_for_rows = sb_drag_for_rows.clone();
                                 move |ev, _, cx| {
+                                    if sb_drag_for_rows.get().is_some() { return; }
+                                    let st = se.read(cx);
+                                    if Self::is_in_scrollbar_hit_region(&sh_for_rows, &st, ev.position) {
+                                        return;
+                                    }
                                     // Adjust screen x by horizontal scroll offset to get content-space x
                                     let x = ev.position.x.as_f32() + h_off_rc.get();
                                     let y = ev.position.y.as_f32();
-                                    let st = se.read(cx);
-                                    let mut cx2 = ROW_NUMBER_WIDTH; let mut cc = 0;
-                                    for c in 0..st.col_count() { let w = st.column_width(c); if x < cx2 + w { cc = c; break; } cx2 += w; cc = c; }
+                                    let cc = Self::hit_test_col_from_content_x(&st, x);
                                     let already = st.is_cell_selected(ri, cc);
                                     drop(st);
                                     se.update(cx, |s, _| {
@@ -1337,6 +1500,66 @@ impl Render for TableView {
         let col_resize_start_for_canvas = self.column_resize_start.clone();
         let state_for_resize = self.state.clone();
         let scrollbar_canvas = canvas(|_, _, _| {}, move |_, _, window, _| {
+            // Capture scrollbar mousedown before row handlers in bubble phase.
+            let drag_down = drag_for_canvas.clone();
+            let sh_down = sh_for_canvas.clone();
+            let h_off_down = h_off_for_canvas.clone();
+            window.on_mouse_event(move |event: &MouseDownEvent, phase, window, _| {
+                if phase != DispatchPhase::Capture { return; }
+                if event.button != MouseButton::Left { return; }
+
+                let sh = sh_down.0.borrow();
+                let bounds = sh.base_handle.bounds();
+                let max_off = sh.base_handle.max_offset();
+                drop(sh);
+
+                let vp_w = bounds.size.width.as_f32();
+                let vp_h = bounds.size.height.as_f32();
+                if vp_w <= 0.0 || vp_h <= 0.0 { return; }
+
+                let max_x = (cw_for_canvas - vp_w).max(0.0);
+                let max_y = max_off.y.as_f32();
+
+                let has_v_bar = max_y > 0.0;
+                let has_h_bar = max_x > 0.0;
+                if !has_v_bar && !has_h_bar { return; }
+
+                const SCROLLBAR_SIZE: f32 = 8.0;
+                const SCROLLBAR_MARGIN: f32 = 2.0;
+                let corner_gap = SCROLLBAR_SIZE + SCROLLBAR_MARGIN * 2.0;
+
+                let ox = bounds.origin.x.as_f32();
+                let oy = bounds.origin.y.as_f32();
+                let mx = event.position.x.as_f32();
+                let my = event.position.y.as_f32();
+
+                let in_v_bar = if has_v_bar {
+                    let track_top = oy;
+                    let track_bottom = oy + if has_h_bar { vp_h - corner_gap } else { vp_h };
+                    let bar_left = ox + vp_w - SCROLLBAR_MARGIN - SCROLLBAR_SIZE;
+                    let bar_right = ox + vp_w - SCROLLBAR_MARGIN;
+                    mx >= bar_left && mx <= bar_right && my >= track_top && my <= track_bottom
+                } else { false };
+
+                let in_h_bar = if has_h_bar {
+                    let track_left = ox;
+                    let track_right = ox + if has_v_bar { vp_w - corner_gap } else { vp_w };
+                    let bar_top = oy + vp_h - SCROLLBAR_MARGIN - SCROLLBAR_SIZE;
+                    let bar_bottom = oy + vp_h - SCROLLBAR_MARGIN;
+                    mx >= track_left && mx <= track_right && my >= bar_top && my <= bar_bottom
+                } else { false };
+
+                if in_v_bar {
+                    drag_down.set(Some(true));
+                    Self::apply_scrollbar_drag(&drag_down, &sh_down, &h_off_down, event.position, cw_for_canvas);
+                    window.refresh();
+                } else if in_h_bar {
+                    drag_down.set(Some(false));
+                    Self::apply_scrollbar_drag(&drag_down, &sh_down, &h_off_down, event.position, cw_for_canvas);
+                    window.refresh();
+                }
+            });
+
             // --- Column resize drag ---
             let cr_move = col_resize_for_canvas.clone();
             let crs_move = col_resize_start_for_canvas.clone();
@@ -1347,7 +1570,8 @@ impl Render for TableView {
                 if !event.dragging() { return; }
                 let (start_x, start_w) = match crs_move.get() { Some(s) => s, None => return };
                 let delta = event.position.x.as_f32() - start_x;
-                let new_w = (start_w + delta).max(30.0);
+                // Snap to whole pixels to avoid subpixel seams in column selection fills.
+                let new_w = (start_w + delta).max(30.0).round();
                 state_move.update(cx, |s, _| {
                     s.column_widths.insert(col_idx, new_w);
                 });
@@ -1384,6 +1608,18 @@ impl Render for TableView {
                 if drag_up.get().is_none() { return; }
                 drag_up.set(None);
                 window.refresh();
+            });
+
+            // Ensure selection drag always ends even if mouse-up occurs outside table hitbox.
+            let state_sel_up = state_for_resize.clone();
+            window.on_mouse_event(move |_event: &MouseUpEvent, phase, _window, cx| {
+                if phase != DispatchPhase::Capture { return; }
+                let _ = state_sel_up.update(cx, |s, cx| {
+                    if s.is_dragging {
+                        s.is_dragging = false;
+                        cx.notify();
+                    }
+                });
             });
 
             // ScrollWheelEvent: capture horizontal scroll wheel and update horizontal_offset.
@@ -1435,22 +1671,23 @@ impl Render for TableView {
                 if this.scrollbar_drag.get().is_some() { return; }
                 let st = this.state.read(cx);
                 if !st.is_dragging { return; }
+                // Only drag-select while mouse button is actively held.
+                // This prevents scroll gestures from moving selection under the cursor.
+                if !ev.dragging() {
+                    drop(st);
+                    this.state.update(cx, |s, _| {
+                        s.is_dragging = false;
+                    });
+                    return;
+                }
                 // Adjust screen x by horizontal scroll offset to get content-space x
                 let x = ev.position.x.as_f32() + this.horizontal_offset.get();
-                let y = ev.position.y.as_f32();
-                let row_y = y - HEADER_HEIGHT;
-                if row_y < 0.0 { return; }
-                let ri = (row_y / ROW_HEIGHT) as usize;
                 let total = st.effective_row_count();
-                let ri = ri.min(total.saturating_sub(1));
-                let mut col_x = ROW_NUMBER_WIDTH;
-                let mut cc = 0usize;
-                for c in 0..st.col_count() {
-                    let w = st.column_width(c);
-                    if x < col_x + w { cc = c; break; }
-                    col_x += w;
-                    cc = c;
-                }
+                let ri = match this.hit_test_row_from_window_y(ev.position.y.as_f32(), total) {
+                    Some(r) => r,
+                    None => return,
+                };
+                let cc = Self::hit_test_col_from_content_x(&st, x);
                 let cur_focus = st.selection_focus;
                 drop(st);
                 let new_focus = CellCoord { row: ri, col: cc };

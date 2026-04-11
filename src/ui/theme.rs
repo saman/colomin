@@ -323,9 +323,9 @@ pub fn default_light() -> ThemeColors {
         bg: hex(0xFAFAFA),
         surface: hex(0xFFFFFF),
         border: hex(0xEEEEEE),
-        text_primary: hex(0x111111),
-        text_secondary: hex(0x555555),
-        text_tertiary: hex(0x888888),
+        text_primary: hex(0x1A1A1A),
+        text_secondary: hex(0x8A8A8A),
+        text_tertiary: hex(0xB0B0B0),
         accent: hex(0x3B82F6),
         accent_hover: hex(0x2563EB),
         accent_text: hex(0xFFFFFF),
@@ -335,7 +335,7 @@ pub fn default_light() -> ThemeColors {
         danger: hex(0xEF4444),
         status_bar_bg: hex(0xFAFAFA),
         gutter_bg: hex(0xFFFFFF),
-        line_number: hex(0x888888),
+        line_number: hex(0xB0B0B0),
         selection: hex(0xC7DEFF),
     }
 }

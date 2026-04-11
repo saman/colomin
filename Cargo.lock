@@ -871,7 +871,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "colomin-gpui"
+name = "colomin"
 version = "0.1.0"
 dependencies = [
  "anyhow",
