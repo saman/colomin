@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -45,6 +47,7 @@ pub enum EditAction {
     CellEdit {
         row: usize,
         col: usize,
+        old_had_edit: bool,
         old_value: String,
         new_value: String,
     },
@@ -60,6 +63,7 @@ pub enum EditAction {
 pub struct BatchEditEntry {
     pub row: usize,
     pub col: usize,
+    pub old_had_edit: bool,
     pub old_value: String,
     pub new_value: String,
 }

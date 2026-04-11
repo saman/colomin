@@ -197,14 +197,19 @@ impl Render for Colomin {
         let has_file = state.file.is_some();
         let is_loading = state.is_loading;
 
-        // Update window title with filename when a file is open
-        let title = if let Some(ref f) = state.file {
+        // Update window title with loading filename or current file + unsaved edit count.
+        let title = if state.is_loading && !state.loading_message.is_empty() {
+            state.loading_message.clone()
+        } else if let Some(ref f) = state.file {
             let name = f.file_path.file_name()
                 .and_then(|n| n.to_str().map(|s| s.to_string()))
                 .unwrap_or_else(|| "Colomin".into());
-            let mut title = name;
-            title.push_str(" — Colomin");
-            title
+            let changes = state.total_changes();
+            if changes > 0 {
+                format!("{} ({})", name, changes)
+            } else {
+                name
+            }
         } else {
             "Colomin".into()
         };
@@ -257,6 +262,57 @@ impl Render for Colomin {
     }
 }
 
+fn open_colomin_window(
+    cx: &mut App,
+    file_to_open: Option<String>,
+) -> Result<WindowHandle<Colomin>> {
+    let bounds = Bounds::centered(None, size(px(1200.), px(800.)), cx);
+
+    cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            titlebar: Some(TitlebarOptions {
+                title: Some("Colomin".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        move |window, cx| {
+            let app_state = cx.new(|_| AppState::new());
+
+            let state_for_table = app_state.clone();
+            let table_view = cx.new(|cx| {
+                let sc = state_for_table.clone();
+                cx.observe(&sc, |_this, _state, cx| cx.notify()).detach();
+                TableView::new(state_for_table, cx)
+            });
+
+            // Focus the table view so keybindings work immediately
+            let tv_focus = table_view.read(cx).focus_handle(cx);
+            tv_focus.focus(window, cx);
+
+            let state_for_status = app_state.clone();
+            let status_bar = cx.new(|cx| {
+                let sc = state_for_status.clone();
+                cx.observe(&sc, |_this, _state, cx| cx.notify()).detach();
+                StatusBar { state: state_for_status }
+            });
+
+            cx.new(|cx| {
+                let mut c = Colomin {
+                    state: app_state,
+                    table_view,
+                    status_bar,
+                };
+                if let Some(ref path) = file_to_open {
+                    c.open_file_async(path.clone(), cx);
+                }
+                c
+            })
+        },
+    )
+}
+
 fn main() {
     let file_to_open = std::env::args().nth(1).and_then(|arg| {
         if !arg.starts_with('-') {
@@ -271,7 +327,9 @@ fn main() {
     let finder_queue: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let finder_queue_cb = finder_queue.clone();
 
-    let app = gpui_platform::application().with_assets(ColominAssets);
+    let app = gpui_platform::application()
+        .with_assets(ColominAssets)
+        .with_quit_mode(QuitMode::Explicit);
 
     app.on_open_urls(move |urls| {
         let paths: Vec<String> = urls
@@ -306,6 +364,26 @@ fn main() {
         }
     });
 
+    app.on_reopen({
+        let finder_queue = finder_queue.clone();
+        move |cx| {
+            let finder_queue = finder_queue.clone();
+            cx.spawn(async move |cx| {
+                // Give open-urls delivery a brief chance to enqueue paths first.
+                cx.background_executor().timer(std::time::Duration::from_millis(180)).await;
+                let has_queued_paths = finder_queue.lock().map(|q| !q.is_empty()).unwrap_or(false);
+                if has_queued_paths {
+                    return;
+                }
+                let _ = cx.update(|cx| {
+                    if cx.windows().is_empty() || cx.active_window().is_none() {
+                        let _ = open_colomin_window(cx, None);
+                    }
+                });
+            }).detach();
+        }
+    });
+
     app.run(move |cx: &mut App| {
         cx.bind_keys([
             KeyBinding::new("up", table::MoveUp, Some("TableView")),
@@ -329,68 +407,26 @@ fn main() {
             KeyBinding::new("cmd-q", table::TQuit, Some("TableView")),
         ]);
 
-        let bounds = Bounds::centered(None, size(px(1200.), px(800.)), cx);
-        let finder_queue_init = finder_queue.clone();
-        let window_handle = cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("Colomin".into()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-            |window, cx| {
-                let app_state = cx.new(|_| AppState::new());
-
-                let state_for_table = app_state.clone();
-                let table_view = cx.new(|cx| {
-                    let sc = state_for_table.clone();
-                    cx.observe(&sc, |_this, _state, cx| cx.notify()).detach();
-                    TableView::new(state_for_table, cx)
-                });
-
-                // Focus the table view so keybindings work immediately
-                let tv_focus = table_view.read(cx).focus_handle(cx);
-                tv_focus.focus(window, cx);
-
-                let state_for_status = app_state.clone();
-                let status_bar = cx.new(|cx| {
-                    let sc = state_for_status.clone();
-                    cx.observe(&sc, |_this, _state, cx| cx.notify()).detach();
-                    StatusBar { state: state_for_status }
-                });
-
-                let colomin = cx.new(|cx| {
-                    let mut c = Colomin {
-                        state: app_state,
-                        table_view,
-                        status_bar,
-                    };
-                    if let Some(ref path) = file_to_open {
-                        // Use async so the main thread is never blocked —
-                        // all I/O happens on a background thread and the
-                        // spinner can animate freely.
-                        c.open_file_async(path.clone(), cx);
-                    } else {
-                        // If the finder queue already has a file (Finder open),
-                        // set loading immediately so the first render shows loading not empty state
-                        if let Ok(q) = finder_queue_init.lock() {
-                            if !q.is_empty() {
-                                c.state.update(cx, |s, _| {
-                                    s.is_loading = true;
-                                    s.loading_progress = 0.0;
-                                });
+        if let Some(path) = file_to_open.clone() {
+            let _ = open_colomin_window(cx, Some(path));
+        } else {
+            // Delay initial empty-window creation briefly so Finder-open URLs
+            // can be queued first. This avoids opening an extra blank window.
+            cx.spawn({
+                let finder_queue = finder_queue.clone();
+                async move |cx| {
+                    cx.background_executor().timer(std::time::Duration::from_millis(220)).await;
+                    let has_queued_paths = finder_queue.lock().map(|q| !q.is_empty()).unwrap_or(false);
+                    if !has_queued_paths {
+                        let _ = cx.update(|cx| {
+                            if cx.windows().is_empty() {
+                                let _ = open_colomin_window(cx, None);
                             }
-                        }
+                        });
                     }
-                    c
-                });
-
-                colomin
-            },
-        )
-        .unwrap();
+                }
+            }).detach();
+        }
 
         // Poll the finder queue and open any queued files.
         // First iteration fires immediately (no delay) to catch files already
@@ -409,16 +445,12 @@ fn main() {
                         std::mem::take(&mut *q)
                     };
                     for path in paths {
-                        let _ = window_handle.update(cx, |colomin, _window, cx| {
-                            colomin.open_file_async(path, cx);
+                        let _ = cx.update(|cx| {
+                            let _ = open_colomin_window(cx, Some(path));
                         });
                     }
                 }
             }
-        }).detach();
-
-        cx.on_window_closed(|cx, _| {
-            cx.quit();
         }).detach();
 
         cx.activate(true);

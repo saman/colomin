@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+
+use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 
 use super::{CellCoord, EditAction, OpenFile, SelectionType, SortState};
@@ -48,7 +51,7 @@ pub struct AppState {
     pub stats_key: String,
     // Row cache
     pub row_cache: HashMap<usize, Vec<String>>,
-    row_cache_order: VecDeque<usize>,
+    row_cache_order: RefCell<VecDeque<usize>>,
     pub cache_version: u64,
 }
 
@@ -86,7 +89,7 @@ impl AppState {
             computing_stats: false,
             stats_key: String::new(),
             row_cache: HashMap::new(),
-            row_cache_order: VecDeque::new(),
+            row_cache_order: RefCell::new(VecDeque::new()),
             cache_version: 0,
         }
     }
@@ -172,25 +175,34 @@ impl AppState {
 
     pub fn clear_cache(&mut self) {
         self.row_cache.clear();
-        self.row_cache_order.clear();
+        self.row_cache_order.borrow_mut().clear();
         self.cache_version += 1;
     }
 
     pub fn get_cached_row(&self, index: usize) -> Option<&[String]> {
-        self.row_cache.get(&index).map(Vec::as_slice)
+        let row = self.row_cache.get(&index)?;
+        self.touch_cache_key(index);
+        Some(row.as_slice())
     }
 
     pub fn cache_row(&mut self, index: usize, data: Vec<String>) {
-        if !self.row_cache.contains_key(&index) {
-            self.row_cache_order.push_back(index);
-            while self.row_cache.len() >= ROW_CACHE_LIMIT {
-                if let Some(oldest) = self.row_cache_order.pop_front() {
-                    self.row_cache.remove(&oldest);
-                } else {
-                    break;
-                }
-            }
-        }
         self.row_cache.insert(index, data);
+        self.touch_cache_key(index);
+
+        while self.row_cache.len() > ROW_CACHE_LIMIT {
+            let oldest = self.row_cache_order.borrow_mut().pop_front();
+            let Some(oldest) = oldest else {
+                break;
+            };
+            self.row_cache.remove(&oldest);
+        }
+    }
+
+    fn touch_cache_key(&self, index: usize) {
+        let mut order = self.row_cache_order.borrow_mut();
+        if let Some(pos) = order.iter().position(|&k| k == index) {
+            order.remove(pos);
+        }
+        order.push_back(index);
     }
 }

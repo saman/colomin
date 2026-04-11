@@ -8,6 +8,10 @@ pub fn commit_edit(view: &mut TableView, cx: &mut Context<TableView>) {
     if let Some((row, col, ref text)) = view.editing {
         let new_value = text.clone();
         view.state.update(cx, |s, _| {
+            let old_had_edit = s
+                .file
+                .as_ref()
+                .map_or(false, |f| f.edits.contains_key(&(row, col)));
             // Capture old value before overwriting (from edits map, then cache)
             let old_value = s.file.as_ref()
                 .and_then(|f| f.edits.get(&(row, col)).cloned())
@@ -28,6 +32,7 @@ pub fn commit_edit(view: &mut TableView, cx: &mut Context<TableView>) {
                 s.undo_stack.push(EditAction::CellEdit {
                     row,
                     col,
+                    old_had_edit,
                     old_value,
                     new_value,
                 });

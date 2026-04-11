@@ -56,11 +56,11 @@ Application
 All three views share `Entity<AppState>`. `Colomin` observes `AppState` and calls `cx.notify()` on any change.
 
 ### File open flow
-Two nearly identical implementations exist (**known tech debt**):
-- `Colomin::open_file_async` in `main.rs:144` — called from Finder queue and CLI
-- `TableView::on_t_open_file` in `table.rs:511` — called from Cmd+O keyboard shortcut
+Open behavior is centralized in `file_open::open_file_async` (`src/file_open.rs`):
+- `Colomin::open_file_async` calls into shared open logic (CLI + root handlers)
+- `TableView::on_t_open_file` calls the same shared open logic (Cmd+O)
 
-Both follow the same pattern:
+Shared flow:
 1. Set `is_loading = true`, `loading_progress = 0.0`, `loading_message = filename`
 2. Create `Arc<AtomicU32>` for progress (stores `f32` bits via `to_bits()`/`from_bits()`)
 3. Spawn **progress polling task**: every 50ms reads atomic, updates `AppState.loading_progress`
@@ -76,9 +76,14 @@ Both follow the same pattern:
 Uses `Arc<Mutex<Vec<String>>>` queue, polled every 100ms from an async task (first iteration immediate).
 URLs are `file://` with percent-encoding — decoded manually in `on_open_urls` callback.
 
+### App lifecycle (macOS)
+- App uses `QuitMode::Explicit` (closing windows does not implicitly quit the process).
+- `on_reopen` opens an empty window when no windows are visible, with a short delay so pending Finder URL opens can win and avoid extra empty/loading windows.
+- Startup empty-window creation is also delayed briefly to avoid races with Finder `open_urls` delivery.
+
 ### Row cache
 - `AppState.row_cache: HashMap<usize, Vec<String>>` — keyed by **virtual** (display) row index
-- **Unbounded** — never evicts (known issue, LRU plan in `plans/plan.md`)
+- Bounded with LRU-style recency tracking (`ROW_CACHE_LIMIT = 5000`, `row_cache_order`)
 - `cache_version: u64` — bumped on every cache mutation, used for change detection
 - `ensure_rows_cached(start, count)` in TableView:
   - **Without sort/filter**: reads contiguous chunk via `read_chunk_with_delim` (single seek + sequential read)
@@ -103,7 +108,7 @@ URLs are `file://` with percent-encoding — decoded manually in `on_open_urls` 
 1. `csv_engine::writer::save_file` writes to `<path>.csv.tmp`
 2. Non-structural: sequential read + edit overlay. Structural: per-cell resolution through `resolve_row`/`resolve_col`
 3. Atomic rename temp → target
-4. Re-indexes the file to refresh state (**inconsistency**: `Colomin::on_save` re-opens async, `TableView::on_t_save_file` re-opens sync)
+4. Re-indexes the file to refresh state (both root and table save handlers reopen through shared async open flow)
 
 ## GPUI constraints — read before touching UI code
 
@@ -465,9 +470,7 @@ Use this order when debugging the app:
    - Delete one-off prints once the fix is confirmed.
 
 ## Known issues & tech debt
-
-- **Row cache policy is FIFO, not true LRU**: Cache is now bounded (5000 rows) with FIFO eviction. True LRU would improve hit-rate during back-and-forth scrolling.
-- **Open flow ownership split**: File-open logic is now shared, but entry points still live in both root (`main.rs`) and table command handlers (`table/file_commands.rs`). Consider consolidating command wiring to a single owner.
+- **Command ownership split**: Open/save/theme/quit handlers still have root (`main.rs`) and table command entry points. Behavior is shared, but command wiring remains distributed.
 
 ## GPUI source reference
 

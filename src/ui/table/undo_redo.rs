@@ -4,19 +4,28 @@ use crate::state::{CellCoord, EditAction, SelectionType};
 
 use super::TableView;
 
+enum EditApplyMode {
+    Remove,
+    Set,
+}
+
 fn apply_cell_value(
     view: &mut TableView,
     row: usize,
     col: usize,
     value: &str,
+    mode: EditApplyMode,
     cx: &mut Context<TableView>,
 ) {
     view.state.update(cx, |s, _| {
         if let Some(ref mut file) = s.file {
-            if value.is_empty() {
-                file.edits.remove(&(row, col));
-            } else {
-                file.edits.insert((row, col), value.to_string());
+            match mode {
+                EditApplyMode::Remove => {
+                    file.edits.remove(&(row, col));
+                }
+                EditApplyMode::Set => {
+                    file.edits.insert((row, col), value.to_string());
+                }
             }
         }
         if let Some(cached) = s.row_cache.get_mut(&row) {
@@ -44,10 +53,16 @@ pub fn on_undo(view: &mut TableView, cx: &mut Context<TableView>) {
         EditAction::CellEdit {
             row,
             col,
+            old_had_edit,
             old_value,
             ..
         } => {
-            apply_cell_value(view, *row, *col, old_value, cx);
+            let mode = if *old_had_edit {
+                EditApplyMode::Set
+            } else {
+                EditApplyMode::Remove
+            };
+            apply_cell_value(view, *row, *col, old_value, mode, cx);
             selection = Some(CellCoord {
                 row: *row,
                 col: *col,
@@ -55,7 +70,12 @@ pub fn on_undo(view: &mut TableView, cx: &mut Context<TableView>) {
         }
         EditAction::BatchCellEdit { edits } => {
             for edit in edits {
-                apply_cell_value(view, edit.row, edit.col, &edit.old_value, cx);
+                let mode = if edit.old_had_edit {
+                    EditApplyMode::Set
+                } else {
+                    EditApplyMode::Remove
+                };
+                apply_cell_value(view, edit.row, edit.col, &edit.old_value, mode, cx);
             }
             if let Some(last) = edits.last() {
                 selection = Some(CellCoord {
@@ -101,7 +121,7 @@ pub fn on_redo(view: &mut TableView, cx: &mut Context<TableView>) {
             new_value,
             ..
         } => {
-            apply_cell_value(view, *row, *col, new_value, cx);
+            apply_cell_value(view, *row, *col, new_value, EditApplyMode::Set, cx);
             selection = Some(CellCoord {
                 row: *row,
                 col: *col,
@@ -109,7 +129,7 @@ pub fn on_redo(view: &mut TableView, cx: &mut Context<TableView>) {
         }
         EditAction::BatchCellEdit { edits } => {
             for edit in edits {
-                apply_cell_value(view, edit.row, edit.col, &edit.new_value, cx);
+                apply_cell_value(view, edit.row, edit.col, &edit.new_value, EditApplyMode::Set, cx);
             }
             if let Some(last) = edits.last() {
                 selection = Some(CellCoord {

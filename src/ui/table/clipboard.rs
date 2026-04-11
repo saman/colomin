@@ -110,6 +110,7 @@ pub fn on_delete(view: &mut TableView, cx: &mut Context<TableView>) {
                 let mut batch_edits = Vec::new();
                 for r in mr..=xr {
                     for c in mc..=xc {
+                        let old_had_edit = file.edits.contains_key(&(r, c));
                         let old_value = file
                             .edits
                             .get(&(r, c))
@@ -128,6 +129,7 @@ pub fn on_delete(view: &mut TableView, cx: &mut Context<TableView>) {
                             batch_edits.push(BatchEditEntry {
                                 row: r,
                                 col: c,
+                                old_had_edit,
                                 old_value,
                                 new_value: String::new(),
                             });

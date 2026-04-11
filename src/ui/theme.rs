@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use gpui::{rgb, Hsla};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -274,6 +276,7 @@ pub fn parse_zed_theme(json: &str) -> Result<Vec<ZedTheme>, String> {
 
 /// Load a Zed theme from a file path
 #[must_use]
+#[allow(dead_code)]
 pub fn load_zed_theme_file(path: &Path) -> Result<Vec<ZedTheme>, String> {
     let json =
         std::fs::read_to_string(path).map_err(|e| format!("Failed to read theme file: {}", e))?;

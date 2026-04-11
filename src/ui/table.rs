@@ -92,11 +92,6 @@ impl TableView {
         cache::ensure_rows_cached(&self.state, start, count, cx);
     }
 
-    /// Build a key that uniquely identifies the current selection for stats caching
-    fn selection_stats_key(state: &AppState) -> String {
-        stats::selection_stats_key(state)
-    }
-
     /// Check if we need to compute stats and spawn a background task if so
     fn maybe_compute_stats(&self, cx: &mut Context<Self>) {
         stats::maybe_compute_stats(&self.state, cx);

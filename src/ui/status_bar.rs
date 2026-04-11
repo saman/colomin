@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use gpui::*;
 
 use crate::state::{AppState, SelectionType, SortDirection};
@@ -476,24 +478,6 @@ impl Render for StatusBar {
                     .text_size(px(10.0))
                     .text_color(colors.accent)
                     .child("\u{2298} filtered"),
-            );
-        }
-
-        if state.has_unsaved_changes() {
-            let n = state.total_changes();
-            zone_right = zone_right.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(5.0))
-                    .child(
-                        div()
-                            .w(px(6.0))
-                            .h(px(6.0))
-                            .rounded(px(3.0))
-                            .bg(colors.accent),
-                    )
-                    .child(format!("{} change{}", n, if n != 1 { "s" } else { "" })),
             );
         }
 
