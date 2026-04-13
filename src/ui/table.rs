@@ -20,7 +20,6 @@ mod stats;
 mod undo_redo;
 mod views;
 
-const ROW_HEIGHT: f32 = 28.0;
 const ROW_NUMBER_WIDTH: f32 = 50.0;
 const HEADER_HEIGHT: f32 = 30.0;
 
@@ -36,18 +35,22 @@ pub struct TableView {
     focus_handle: FocusHandle,
     editing: Option<(usize, usize, String)>,
     needs_focus: bool,
-    scroll_handle: UniformListScrollHandle,
+    scroll_handle: ScrollHandle,
     /// Shared scrollbar drag state: Some(true) = vertical, Some(false) = horizontal.
-    /// Uses Rc<Cell<>> so window-level mouse listeners can access it from plain closures.
     scrollbar_drag: Rc<Cell<Option<bool>>>,
+    /// Offset from mouse position to thumb top/left when drag started.
+    scrollbar_drag_anchor: Rc<Cell<f32>>,
     /// Manual horizontal scroll offset (positive = scrolled right).
-    /// Managed independently from the uniform_list which only handles vertical scroll.
     horizontal_offset: Rc<Cell<f32>>,
     scrollbar_initialized: bool,
     /// Column being resized (index), shared with canvas drag listeners.
     column_resize: Rc<Cell<Option<usize>>>,
     /// (start_mouse_x_in_window, start_column_width) captured on resize mouse-down.
     column_resize_start: Rc<Cell<Option<(f32, f32)>>>,
+    /// Row-height resize target: None = not resizing, Some(usize::MAX) = global, Some(n) = per-row.
+    row_resize: Rc<Cell<Option<usize>>>,
+    /// (start_mouse_y_in_window, start_row_height) captured on resize mouse-down.
+    row_resize_start: Rc<Cell<Option<(f32, f32)>>>,
 }
 
 impl TableView {
@@ -55,18 +58,19 @@ impl TableView {
         hit_test::hit_test_col_from_content_x(state, x_content, ROW_NUMBER_WIDTH)
     }
 
-    fn hit_test_row_from_window_y(&self, y_window: f32, total_rows: usize) -> Option<usize> {
+    fn hit_test_row_from_window_y(&self, y_window: f32, total_rows: usize, cx: &App) -> Option<usize> {
+        let state = self.state.read(cx);
         hit_test::hit_test_row_from_window_y(
             &self.scroll_handle,
             y_window,
             total_rows,
             HEADER_HEIGHT,
-            ROW_HEIGHT,
+            state,
         )
     }
 
     fn is_in_scrollbar_hit_region(
-        scroll_handle: &UniformListScrollHandle,
+        scroll_handle: &ScrollHandle,
         state: &AppState,
         mouse_pos: Point<Pixels>,
     ) -> bool {
@@ -79,12 +83,15 @@ impl TableView {
             focus_handle: cx.focus_handle(),
             editing: None,
             needs_focus: true,
-            scroll_handle: UniformListScrollHandle::new(),
+            scroll_handle: ScrollHandle::new(),
             scrollbar_drag: Rc::new(Cell::new(None)),
+            scrollbar_drag_anchor: Rc::new(Cell::new(0.0)),
             horizontal_offset: Rc::new(Cell::new(0.0)),
             scrollbar_initialized: false,
             column_resize: Rc::new(Cell::new(None)),
             column_resize_start: Rc::new(Cell::new(None)),
+            row_resize: Rc::new(Cell::new(None)),
+            row_resize_start: Rc::new(Cell::new(None)),
         }
     }
 
@@ -121,21 +128,25 @@ impl TableView {
     /// This is a static helper that works with shared Rc state for use from window-level listeners.
     fn apply_scrollbar_drag(
         scrollbar_drag: &Rc<Cell<Option<bool>>>,
-        scroll_handle: &UniformListScrollHandle,
+        scrollbar_drag_anchor: &Rc<Cell<f32>>,
+        scroll_handle: &ScrollHandle,
         horizontal_offset: &Rc<Cell<f32>>,
         mouse_pos: Point<Pixels>,
         content_width: f32,
+        content_height: f32,
     ) {
         scroll::apply_scrollbar_drag(
             scrollbar_drag,
+            scrollbar_drag_anchor,
             scroll_handle,
             horizontal_offset,
             mouse_pos,
             content_width,
+            content_height,
         );
     }
 
-    fn start_edit_from_state(&mut self, cx: &App) {
+    fn start_edit_from_state(&mut self, cx: &mut Context<Self>) {
         editing::start_edit_from_state(self, cx);
     }
 
@@ -197,9 +208,11 @@ impl TableView {
         render_header::render_header(self, cx, ROW_NUMBER_WIDTH, HEADER_HEIGHT)
     }
 
-    fn render_row_el(&self, ri: usize, cx: &App) -> Stateful<Div> {
-        render_row::render_row_el(self, ri, cx, ROW_NUMBER_WIDTH, ROW_HEIGHT)
+    fn render_row_el(&self, display_ri: usize, actual_ri: Option<usize>, display_num: usize, cx: &App) -> Stateful<Div> {
+        let row_height = self.state.read(cx).row_height_for(display_ri);
+        render_row::render_row_el(self, display_ri, actual_ri, display_num, cx, ROW_NUMBER_WIDTH, row_height)
     }
+
 }
 
 impl Focusable for TableView {
@@ -224,9 +237,7 @@ impl Render for TableView {
             return views::render_empty(self, &focus_handle, cx);
         }
 
-        let state = self.state.read(cx);
-        let total_rows = state.effective_row_count();
-        let _ = state;
+        let display_rows = self.state.read(cx).display_row_count();
 
         // Pick up pending edit from double-click
         self.start_edit_from_state(cx);
@@ -237,9 +248,11 @@ impl Render for TableView {
         // Apply pending sort requests from context menu actions.
         self.maybe_apply_pending_sort(cx);
 
+        // Render body first — it clamps horizontal_offset based on viewport/content width.
+        // Header must be rendered AFTER so it reads the clamped value.
+        let body = body::render_body(self, display_rows, cx, ROW_NUMBER_WIDTH);
         let header = self.render_header(cx);
         let colors = self.state.read(cx).current_theme();
-        let body = body::render_body(self, total_rows, cx, ROW_NUMBER_WIDTH);
 
         div()
             .size_full().flex().flex_col().bg(colors.bg)

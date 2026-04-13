@@ -294,11 +294,12 @@ pub fn bundled_themes() -> Vec<ZedTheme> {
         colors: default_light(),
     });
 
-    // macOS Classic
-    let macos_json = include_str!("../../themes/macos-classic.json");
-    if let Ok(themes) = parse_zed_theme(macos_json) {
-        all.extend(themes);
-    }
+    // Colomin Dark (our original design)
+    all.push(ZedTheme {
+        name: "Colomin Dark".into(),
+        appearance: ThemeAppearance::Dark,
+        colors: colomin_dark(),
+    });
 
     // GitHub Theme
     let github_json = include_str!("../../themes/github.json");
@@ -364,5 +365,27 @@ pub fn default_dark() -> ThemeColors {
         gutter_bg: hex(0x1A1A1A),
         line_number: hex(0x4A4A4A),
         selection: hex(0x172554),
+    }
+}
+
+pub fn colomin_dark() -> ThemeColors {
+    ThemeColors {
+        bg: hex(0x141414),
+        surface: hex(0x1B1B1B),
+        border: hex(0x2B2B2B),
+        text_primary: hex(0xE8E8E8),
+        text_secondary: hex(0xA1A1A1),
+        text_tertiary: hex(0x6E6E6E),
+        accent: hex(0x60A5FA),
+        accent_hover: hex(0x3B82F6),
+        accent_text: hex(0x08111F),
+        accent_subtle: hex(0x10233D),
+        edited: hex(0x3A2410),
+        hover_row: hex(0x1E293B),
+        danger: hex(0xEF4444),
+        status_bar_bg: hex(0x141414),
+        gutter_bg: hex(0x1B1B1B),
+        line_number: hex(0x6E6E6E),
+        selection: hex(0x17335C),
     }
 }

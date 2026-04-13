@@ -434,6 +434,7 @@ pub fn aggregate_column(
     let mut max_length: Option<usize> = None;
     let mut count: usize = 0;
     let mut numeric_count: usize = 0;
+    let mut char_len: usize = 0;
 
     for (row_idx, result) in csv_reader.records().enumerate() {
         if row_idx >= row_offsets.len() {
@@ -448,7 +449,8 @@ pub fn aggregate_column(
         };
 
         count += 1;
-        let len = value.len();
+        let len = value.chars().count();
+        char_len += len;
         min_length = Some(min_length.map_or(len, |m: usize| m.min(len)));
         max_length = Some(max_length.map_or(len, |m: usize| m.max(len)));
 
@@ -478,6 +480,7 @@ pub fn aggregate_column(
         max: max_num,
         count,
         numeric_count,
+        char_len,
         min_length,
         max_length,
     })

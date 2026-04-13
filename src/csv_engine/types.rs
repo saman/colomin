@@ -68,6 +68,7 @@ pub struct ColumnStats {
     pub max: Option<f64>,
     pub count: usize,
     pub numeric_count: usize,
+    pub char_len: usize,
     pub min_length: Option<usize>,
     pub max_length: Option<usize>,
 }

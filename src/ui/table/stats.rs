@@ -6,26 +6,7 @@ use crate::state::{AppState, SelectionType};
 use super::TableView;
 
 pub(super) fn selection_stats_key(state: &AppState) -> String {
-    match &state.selection_type {
-        Some(SelectionType::Column) => {
-            let mut cols: Vec<usize> = state.selected_columns.iter().copied().collect();
-            cols.sort();
-            format!("col:{:?}", cols)
-        }
-        Some(SelectionType::Row) => {
-            let mut rows: Vec<usize> = state.selected_rows.iter().copied().collect();
-            rows.sort();
-            format!("row:{:?}", rows)
-        }
-        Some(SelectionType::Cell) => {
-            if let Some((mr, xr, mc, xc)) = state.selection_range() {
-                format!("cell:{}-{}-{}-{}", mr, xr, mc, xc)
-            } else {
-                String::new()
-            }
-        }
-        None => String::new(),
-    }
+    state.selection_stats_key()
 }
 
 pub(super) fn maybe_compute_stats(state_entity: &Entity<AppState>, cx: &mut Context<TableView>) {
@@ -36,17 +17,26 @@ pub(super) fn maybe_compute_stats(state_entity: &Entity<AppState>, cx: &mut Cont
 
         // No selection or single cell — no async stats needed
         if key.is_empty() {
+            state.computing_stats = false;
             return None;
         }
         if let Some(SelectionType::Cell) = &state.selection_type {
             if let Some((mr, xr, mc, xc)) = state.selection_range() {
                 if mr == xr && mc == xc {
+                    state.computing_stats = false;
                     return None;
                 }
                 let total_cells = (xr - mr + 1) * (xc - mc + 1);
                 if total_cells < 500 {
-                    let all_cached = (mr..=xr).all(|r| state.get_cached_row(r).is_some());
+                    let all_cached = (mr..=xr).all(|r| {
+                        state.display_row_to_actual_row(r).is_none()
+                            || state
+                                .display_row_to_actual_row(r)
+                                .and_then(|actual| state.get_cached_row(actual))
+                                .is_some()
+                    });
                     if all_cached {
+                        state.computing_stats = false;
                         return None;
                     }
                 }
@@ -73,6 +63,8 @@ pub(super) fn maybe_compute_stats(state_entity: &Entity<AppState>, cx: &mut Cont
             state.selected_columns.clone(),
             state.selected_rows.clone(),
             state.selection_range(),
+            !state.header_row_enabled,
+            file.metadata.columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
         );
 
         // Mark as computing NOW, atomically with the check
@@ -83,7 +75,7 @@ pub(super) fn maybe_compute_stats(state_entity: &Entity<AppState>, cx: &mut Cont
         Some((key, data))
     });
 
-    let (key, (path, row_offsets, edits, delimiter, col_count, sel_type, sel_cols, sel_rows, sel_range)) =
+    let (key, (path, row_offsets, edits, delimiter, col_count, sel_type, sel_cols, sel_rows, sel_range, header_off, header_values)) =
         match task_data {
             Some((k, d)) => (k, d),
             None => return,
@@ -100,6 +92,30 @@ pub(super) fn maybe_compute_stats(state_entity: &Entity<AppState>, cx: &mut Cont
                 let mut sum = 0.0f64;
                 let mut min = f64::INFINITY;
                 let mut max = f64::NEG_INFINITY;
+                let mut char_len = 0usize;
+
+                if header_off {
+                    for &col_idx in &sel_cols {
+                        let val = header_values.get(col_idx).map_or("", |v| v.as_str());
+                        count += 1;
+                        char_len += val.chars().count();
+                        let trimmed = val.trim();
+                        if !trimmed.is_empty() {
+                            if let Ok(n) = trimmed.parse::<f64>() {
+                                if n.is_finite() {
+                                    num_count += 1;
+                                    sum += n;
+                                    if n < min {
+                                        min = n;
+                                    }
+                                    if n > max {
+                                        max = n;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
 
                 for &col_idx in &sel_cols {
                     if let Ok(stats) =
@@ -107,6 +123,7 @@ pub(super) fn maybe_compute_stats(state_entity: &Entity<AppState>, cx: &mut Cont
                     {
                         count += stats.count;
                         num_count += stats.numeric_count;
+                        char_len += stats.char_len;
                         if let Some(s) = stats.sum {
                             sum += s;
                         }
@@ -138,10 +155,10 @@ pub(super) fn maybe_compute_stats(state_entity: &Entity<AppState>, cx: &mut Cont
                 } else {
                     0.0
                 };
-                Some((count, num_count, sum, avg, min, max))
+                Some((count, num_count, sum, avg, min, max, char_len))
             }
             Some(SelectionType::Row) | Some(SelectionType::Cell) => {
-                // Stream the entire file sequentially and pick out the rows we need
+                // Stream the file sequentially and evaluate selections in display-row space.
                 let is_row_sel = matches!(sel_type, Some(SelectionType::Row));
                 let selected_row_set: std::collections::HashSet<usize> = if is_row_sel {
                     sel_rows.iter().copied().collect()
@@ -151,7 +168,7 @@ pub(super) fn maybe_compute_stats(state_entity: &Entity<AppState>, cx: &mut Cont
                 let (mr, xr, mc, xc) = if is_row_sel {
                     (
                         0,
-                        row_offsets.len().saturating_sub(1),
+                        row_offsets.len().saturating_sub(1) + usize::from(header_off),
                         0,
                         col_count.saturating_sub(1),
                     )
@@ -167,13 +184,58 @@ pub(super) fn maybe_compute_stats(state_entity: &Entity<AppState>, cx: &mut Cont
                 let mut sum = 0.0f64;
                 let mut min = f64::INFINITY;
                 let mut max = f64::NEG_INFINITY;
+                let mut char_len = 0usize;
+
+                if header_off {
+                    let include_header = if is_row_sel {
+                        selected_row_set.contains(&0)
+                    } else {
+                        mr == 0
+                    };
+                    if include_header {
+                        let col_start = if is_row_sel { 0 } else { mc };
+                        let col_end = if is_row_sel {
+                            col_count.saturating_sub(1)
+                        } else {
+                            xc
+                        };
+                        for ci in col_start..=col_end {
+                            let val = header_values.get(ci).map_or("", |v| v.as_str());
+                            count += 1;
+                            char_len += val.chars().count();
+                            let trimmed = val.trim();
+                            if !trimmed.is_empty() {
+                                if let Ok(n) = trimmed.parse::<f64>() {
+                                    if n.is_finite() {
+                                        num_count += 1;
+                                        sum += n;
+                                        if n < min {
+                                            min = n;
+                                        }
+                                        if n > max {
+                                            max = n;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let actual_start = if is_row_sel {
+                    0
+                } else if header_off {
+                    mr.saturating_sub(1)
+                } else {
+                    mr
+                };
 
                 let f = std::fs::File::open(&path).ok()?;
                 let mut buf_reader = std::io::BufReader::new(f);
-                if !row_offsets.is_empty() {
+                if !row_offsets.is_empty() && actual_start < row_offsets.len() {
                     use std::io::Seek;
                     buf_reader
-                        .seek(std::io::SeekFrom::Start(row_offsets[mr]))
+                        .seek(std::io::SeekFrom::Start(row_offsets[actual_start]))
                         .ok()?;
                 }
                 let mut csv_rdr = csv::ReaderBuilder::new()
@@ -183,8 +245,16 @@ pub(super) fn maybe_compute_stats(state_entity: &Entity<AppState>, cx: &mut Cont
                     .from_reader(buf_reader);
 
                 for (i, result) in csv_rdr.records().enumerate() {
-                    let row_idx = mr + i;
-                    if row_idx > xr {
+                    let actual_row_idx = actual_start + i;
+                    if actual_row_idx >= row_offsets.len() {
+                        break;
+                    }
+                    let display_row_idx = if header_off {
+                        actual_row_idx + 1
+                    } else {
+                        actual_row_idx
+                    };
+                    if !is_row_sel && display_row_idx > xr {
                         break;
                     }
                     let record = match result {
@@ -192,11 +262,10 @@ pub(super) fn maybe_compute_stats(state_entity: &Entity<AppState>, cx: &mut Cont
                         Err(_) => continue,
                     };
 
-                    // Check if this row is in our selection
                     let in_selection = if is_row_sel {
-                        selected_row_set.contains(&row_idx)
+                        selected_row_set.contains(&display_row_idx)
                     } else {
-                        true
+                        display_row_idx >= mr && display_row_idx <= xr
                     };
                     if !in_selection {
                         continue;
@@ -210,12 +279,13 @@ pub(super) fn maybe_compute_stats(state_entity: &Entity<AppState>, cx: &mut Cont
                     };
 
                     for ci in col_start..=col_end {
-                        let val = if let Some(edited) = edits.get(&(row_idx, ci)) {
+                        let val = if let Some(edited) = edits.get(&(actual_row_idx, ci)) {
                             edited.as_str()
                         } else {
                             record.get(ci).unwrap_or("")
                         };
                         count += 1;
+                        char_len += val.chars().count();
                         let trimmed = val.trim();
                         if !trimmed.is_empty() {
                             if let Ok(n) = trimmed.parse::<f64>() {
@@ -249,7 +319,7 @@ pub(super) fn maybe_compute_stats(state_entity: &Entity<AppState>, cx: &mut Cont
                 } else {
                     0.0
                 };
-                Some((count, num_count, sum, avg, min, max))
+                Some((count, num_count, sum, avg, min, max, char_len))
             }
             None => None,
         })

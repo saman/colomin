@@ -4,7 +4,9 @@ use super::TableView;
 
 pub(super) fn render_row_el(
     this: &TableView,
-    ri: usize,
+    display_ri: usize,
+    actual_ri: Option<usize>,
+    display_num: usize,
     cx: &App,
     row_number_width: f32,
     row_height: f32,
@@ -13,7 +15,7 @@ pub(super) fn render_row_el(
     let colors = state.current_theme();
     let file = state.file.as_ref().expect("file should exist when rendering row");
     let columns = &file.metadata.columns;
-    let is_row_sel = state.selected_rows.contains(&ri);
+    let is_row_sel = state.selected_rows.contains(&display_ri);
     let row_bg = if is_row_sel {
         colors.accent_subtle
     } else {
@@ -24,7 +26,15 @@ pub(super) fn render_row_el(
     } else {
         colors.text_tertiary
     };
-    let cached = state.get_cached_row(ri);
+    let header_row = if actual_ri.is_none() {
+        Some(columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>())
+    } else {
+        None
+    };
+    let cached = match actual_ri {
+        Some(actual_ri) => state.get_cached_row(actual_ri),
+        None => header_row.as_deref(),
+    };
     let total_w: f32 = row_number_width
         + columns
             .iter()
@@ -37,7 +47,7 @@ pub(super) fn render_row_el(
     let hover_bg = colors.hover_row;
     // Outer row: relative positioning context, clips overflow, fixed height
     let row_outer = div()
-        .id(ElementId::NamedInteger("r".into(), ri as u64))
+        .id(ElementId::NamedInteger("r".into(), display_ri as u64))
         .h(px(row_height))
         .w_full()
         .relative()
@@ -59,8 +69,28 @@ pub(super) fn render_row_el(
         .left(px(-h_off))
         .w(px(total_w));
 
+    // Row number cell with row resize handle at the bottom
+    let rr = this.row_resize.clone();
+    let rrs = this.row_resize_start.clone();
+    let resize_accent = colors.accent;
+    let rn_border = colors.border;
+    let resize_handle = div()
+        .id(ElementId::NamedInteger("rrh".into(), display_ri as u64))
+        .absolute()
+        .bottom(px(0.))
+        .left_0()
+        .w_full()
+        .h(px(6.0))
+        .cursor_row_resize()
+        .hover(move |s| s.border_b_2().border_color(resize_accent))
+        .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, _, _| {
+            rr.set(Some(display_ri));
+            rrs.set(Some((ev.position.y.as_f32(), row_height)));
+        });
+
     inner = inner.child(
         div()
+            .relative()
             .flex_shrink_0()
             .w(px(row_number_width))
             .h_full()
@@ -69,17 +99,18 @@ pub(super) fn render_row_el(
             .justify_end()
             .pr(px(8.0))
             .border_r_1()
-            .border_color(colors.border)
+            .border_color(rn_border)
             .text_size(px(10.0))
             .text_color(rn_color)
-            .child(format!("{}", ri + 1)),
+            .child(format!("{}", display_num))
+            .child(resize_handle),
     );
 
     // If data not yet cached, render placeholder cells
     if cached.is_none() {
         for col in columns.iter() {
             let w = state.column_width(col.index);
-            let is_sel = state.is_cell_selected(ri, col.index);
+            let is_sel = state.is_cell_selected(display_ri, col.index);
             let cell_bg = if is_sel { colors.accent_subtle } else { row_bg };
             inner = inner.child(
                 div()
@@ -107,7 +138,7 @@ pub(super) fn render_row_el(
         let is_editing = this
             .editing
             .as_ref()
-            .map_or(false, |(r, c, _)| *r == ri && *c == ci);
+            .map_or(false, |(r, c, _)| *r == display_ri && *c == ci);
         let val = if is_editing {
             this.editing
                 .as_ref()
@@ -117,8 +148,8 @@ pub(super) fn render_row_el(
             cached.and_then(|r| r.get(ci)).cloned().unwrap_or_default()
         };
 
-        let is_edited = file.edits.contains_key(&(ri, ci));
-        let is_sel = state.is_cell_selected(ri, ci);
+        let is_edited = actual_ri.map_or(false, |actual_ri| file.edits.contains_key(&(actual_ri, ci)));
+        let is_sel = state.is_cell_selected(display_ri, ci);
 
         let cell_bg = if is_editing {
             colors.surface
@@ -148,8 +179,8 @@ pub(super) fn render_row_el(
         } else if is_sel {
             if let Some((mr, xr, mc, xc)) = sel_range {
                 let sel_border = colors.accent;
-                let is_top = ri == mr;
-                let is_bottom = ri == xr;
+                let is_top = display_ri == mr;
+                let is_bottom = display_ri == xr;
                 let is_left = ci == mc;
                 let is_right = ci == xc;
 

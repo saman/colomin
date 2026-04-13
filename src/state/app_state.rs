@@ -2,8 +2,9 @@
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use super::{CellCoord, EditAction, OpenFile, SelectionType, SortState};
+use super::{CellCoord, EditAction, OpenFile, PreferredStat, SelectionType, SortState};
 
 /// The main application state, held as a GPUI Model
 pub struct AppState {
@@ -23,6 +24,9 @@ pub struct AppState {
     pub redo_stack: Vec<EditAction>,
     // UI state
     pub column_widths: HashMap<usize, f32>,
+    pub default_column_width: f32,
+    pub row_height: f32,
+    pub row_heights: HashMap<usize, f32>,
     pub search_query: String,
     pub search_results: Vec<usize>,
     pub show_search: bool,
@@ -41,10 +45,22 @@ pub struct AppState {
     pub editing_cell: Option<(usize, usize, String)>,
     /// Context menu position and target cell (screen x, screen y, row, col)
     pub context_menu: Option<(f32, f32, usize, usize)>,
+    /// Settings menu open state
+    pub settings_menu: bool,
+    /// Whether the settings menu is currently showing the theme list submenu
+    pub settings_theme_submenu: bool,
+    /// View-only header mode toggle. When false, header labels use Excel letters.
+    pub header_row_enabled: bool,
     /// Whether the user is currently dragging to select cells
     pub is_dragging: bool,
-    /// Async-computed stats for large selections (count, numeric_count, sum, avg, min, max)
-    pub computed_stats: Option<(usize, usize, f64, f64, f64, f64)>,
+    /// Which stat to show by default in the center zone when a range is selected
+    pub preferred_stat: PreferredStat,
+    /// Whether the stats picker menu is open
+    pub stats_menu: bool,
+    /// Screen-space X center of the stat badge (for anchoring the stats menu)
+    pub stat_badge_center_x: f32,
+    /// Async-computed stats for large selections (count, numeric_count, sum, avg, min, max, char_len)
+    pub computed_stats: Option<(usize, usize, f64, f64, f64, f64, usize)>,
     /// Whether stats are currently being computed
     pub computing_stats: bool,
     /// Key that identifies the current stats computation (to avoid stale results)
@@ -56,9 +72,36 @@ pub struct AppState {
 }
 
 const ROW_CACHE_LIMIT: usize = 5000;
+static THEME_MEMORY_INDEX: AtomicUsize = AtomicUsize::new(0);
+static THEME_EVER_SET: AtomicBool = AtomicBool::new(false);
+
+/// Detect if macOS is in dark mode via `defaults read`.
+fn system_is_dark_mode() -> bool {
+    std::process::Command::new("defaults")
+        .args(["read", "-g", "AppleInterfaceStyle"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().eq_ignore_ascii_case("dark"))
+        .unwrap_or(false)
+}
 
 impl AppState {
     pub fn new() -> Self {
+        let themes = crate::ui::theme::bundled_themes();
+        let theme_count = themes.len().max(1);
+
+        let remembered_theme = if THEME_EVER_SET.load(Ordering::Relaxed) {
+            THEME_MEMORY_INDEX.load(Ordering::Relaxed) % theme_count
+        } else if system_is_dark_mode() {
+            // First launch + system dark mode → pick first dark theme
+            let dark_idx = themes.iter().position(|t| {
+                matches!(t.appearance, crate::ui::theme::ThemeAppearance::Dark)
+            }).unwrap_or(0);
+            THEME_MEMORY_INDEX.store(dark_idx, Ordering::Relaxed);
+            THEME_EVER_SET.store(true, Ordering::Relaxed);
+            dark_idx
+        } else {
+            0 // Colomin Light
+        };
         Self {
             file: None,
             selection_type: None,
@@ -72,6 +115,9 @@ impl AppState {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             column_widths: HashMap::new(),
+            default_column_width: 150.0,
+            row_height: 28.0,
+            row_heights: HashMap::new(),
             search_query: String::new(),
             search_results: Vec::new(),
             show_search: false,
@@ -81,10 +127,16 @@ impl AppState {
             is_loading: false,
             loading_message: String::new(),
             loading_progress: 0.0,
-            theme_index: 0,
+            theme_index: remembered_theme,
             editing_cell: None,
             context_menu: None,
+            settings_menu: false,
+            settings_theme_submenu: false,
+            header_row_enabled: true,
             is_dragging: false,
+            preferred_stat: PreferredStat::Count,
+            stats_menu: false,
+            stat_badge_center_x: 0.0,
             computed_stats: None,
             computing_stats: false,
             stats_key: String::new(),
@@ -98,12 +150,58 @@ impl AppState {
         self.file.as_ref().map_or(0, |f| f.effective_row_count())
     }
 
+    pub fn display_row_count(&self) -> usize {
+        let data_rows = self.effective_row_count();
+        if !self.header_row_enabled && self.file.is_some() {
+            data_rows + 1
+        } else {
+            data_rows
+        }
+    }
+
+    pub fn display_row_to_actual_row(&self, display_row: usize) -> Option<usize> {
+        if !self.header_row_enabled && self.file.is_some() {
+            if display_row == 0 {
+                None
+            } else {
+                Some(display_row - 1)
+            }
+        } else {
+            Some(display_row)
+        }
+    }
+
+    pub fn actual_row_to_display_row(&self, actual_row: usize) -> usize {
+        if !self.header_row_enabled && self.file.is_some() {
+            actual_row + 1
+        } else {
+            actual_row
+        }
+    }
+
+    pub fn get_display_row(&self, display_row: usize) -> Option<Vec<String>> {
+        let file = self.file.as_ref()?;
+        match self.display_row_to_actual_row(display_row) {
+            Some(actual_row) => self.get_cached_row(actual_row).map(|row| row.to_vec()),
+            None => Some(file.metadata.columns.iter().map(|c| c.name.clone()).collect()),
+        }
+    }
+
+    pub fn get_display_cell(&self, display_row: usize, col: usize) -> Option<String> {
+        self.get_display_row(display_row)
+            .and_then(|row| row.get(col).cloned())
+    }
+
     pub fn col_count(&self) -> usize {
         self.file.as_ref().map_or(0, |f| f.metadata.columns.len())
     }
 
     pub fn column_width(&self, col: usize) -> f32 {
-        self.column_widths.get(&col).copied().unwrap_or(150.0)
+        self.column_widths.get(&col).copied().unwrap_or(self.default_column_width)
+    }
+
+    pub fn row_height_for(&self, display_row: usize) -> f32 {
+        self.row_heights.get(&display_row).copied().unwrap_or(self.row_height)
     }
 
     pub fn selection_range(&self) -> Option<(usize, usize, usize, usize)> {
@@ -118,6 +216,29 @@ impl AppState {
             anchor.col.min(focus.col),
             anchor.col.max(focus.col),
         ))
+    }
+
+    pub fn selection_stats_key(&self) -> String {
+        match &self.selection_type {
+            Some(SelectionType::Column) => {
+                let mut cols: Vec<usize> = self.selected_columns.to_vec();
+                cols.sort_unstable();
+                format!("col:{:?}", cols)
+            }
+            Some(SelectionType::Row) => {
+                let mut rows: Vec<usize> = self.selected_rows.to_vec();
+                rows.sort_unstable();
+                format!("row:{:?}", rows)
+            }
+            Some(SelectionType::Cell) => {
+                if let Some((mr, xr, mc, xc)) = self.selection_range() {
+                    format!("cell:{}-{}-{}-{}", mr, xr, mc, xc)
+                } else {
+                    String::new()
+                }
+            }
+            None => String::new(),
+        }
     }
 
     pub fn is_cell_selected(&self, row: usize, col: usize) -> bool {
@@ -149,7 +270,12 @@ impl AppState {
     pub fn has_unsaved_changes(&self) -> bool {
         self.file
             .as_ref()
-            .map_or(false, |f| !f.edits.is_empty() || f.row_order.is_some() || f.col_order.is_some())
+            .map_or(false, |f| !f.edits.is_empty() || f.columns_renamed || f.row_order.is_some() || f.col_order.is_some())
+    }
+
+    /// Returns true if any popup menu is currently open (settings, stats, or context menu).
+    pub fn has_open_menu(&self) -> bool {
+        self.settings_menu || self.stats_menu || self.context_menu.is_some()
     }
 
     pub fn total_changes(&self) -> usize {
@@ -171,6 +297,15 @@ impl AppState {
     pub fn cycle_theme(&mut self) {
         let count = crate::ui::theme::bundled_themes().len();
         self.theme_index = (self.theme_index + 1) % count;
+        THEME_MEMORY_INDEX.store(self.theme_index, Ordering::Relaxed);
+        THEME_EVER_SET.store(true, Ordering::Relaxed);
+    }
+
+    pub fn set_theme_index(&mut self, idx: usize) {
+        let count = crate::ui::theme::bundled_themes().len().max(1);
+        self.theme_index = idx.min(count - 1);
+        THEME_MEMORY_INDEX.store(self.theme_index, Ordering::Relaxed);
+        THEME_EVER_SET.store(true, Ordering::Relaxed);
     }
 
     pub fn clear_cache(&mut self) {

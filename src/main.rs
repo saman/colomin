@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use anyhow;
 use gpui::*;
 use state::AppState;
+use state::PreferredStat;
 use ui::status_bar::StatusBar;
 use ui::table::{self, TableView};
 
@@ -121,6 +122,260 @@ impl Colomin {
 actions!(context_menu, [CmCopy, CmDelete, CmSortAsc, CmSortDesc, CmInsertRowAbove, CmInsertRowBelow]);
 
 impl Colomin {
+    fn render_settings_menu(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let state = self.state.read(cx);
+        if !state.settings_menu {
+            return None;
+        }
+        let colors = state.current_theme();
+        let header_on = state.header_row_enabled;
+        let theme_name = state.theme_name();
+        let theme_index = state.theme_index;
+        let theme_submenu = state.settings_theme_submenu;
+        let themes = ui::theme::bundled_themes();
+        let _ = state;
+
+        let se = self.state.clone();
+
+        let menu_item = |id: &str, icon_path: &str, label: String, icon_color: Hsla, se: Entity<AppState>, action: Box<dyn Fn(&mut AppState)>| {
+            let se2 = se.clone();
+            div()
+                .id(SharedString::from(id.to_string()))
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .px(px(12.0))
+                .py(px(6.0))
+                .text_size(px(12.0))
+                .text_color(colors.text_primary)
+                .cursor_pointer()
+                .rounded(px(4.0))
+                .hover(|s| s.bg(colors.accent_subtle))
+                .child(
+                    svg()
+                        .path(SharedString::from(icon_path.to_string()))
+                        .size(px(15.0))
+                        .flex_shrink_0()
+                        .text_color(icon_color),
+                )
+                .child(label)
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    se2.update(cx, |s, _| {
+                        action(s);
+                        s.settings_menu = false;
+                    });
+                })
+        };
+
+        let header_icon = if header_on {
+            "assets/icons/columns-on.svg"
+        } else {
+            "assets/icons/columns-off.svg"
+        };
+
+        // Popover anchored bottom-right, above the status bar
+        let mut menu = div()
+            .id("settings-menu-popover")
+            .occlude()
+            .absolute()
+            .bottom(px(28.0))
+            .right(px(8.0))
+            .w(px(220.0))
+            .py(px(4.0))
+            .bg(colors.surface)
+            .border_1()
+            .border_color(colors.border)
+            .rounded(px(8.0))
+            .shadow_lg()
+            .text_color(colors.text_primary);
+
+        if theme_submenu {
+            let se_back = se.clone();
+            menu = menu
+                .child(
+                    div()
+                        .id("sm-theme-back")
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .px(px(12.0))
+                        .py(px(6.0))
+                        .text_size(px(12.0))
+                        .text_color(colors.text_secondary)
+                        .cursor_pointer()
+                        .rounded(px(4.0))
+                        .hover(|s| s.bg(colors.accent_subtle))
+                        .child("← Back")
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            se_back.update(cx, |s, _| {
+                                s.settings_theme_submenu = false;
+                            });
+                        }),
+                )
+                .child(div().h(px(1.0)).my(px(4.0)).bg(colors.border));
+
+            for (idx, theme) in themes.iter().enumerate() {
+                let is_active = idx == theme_index;
+                let se_theme = se.clone();
+                let theme_name = theme.name.clone();
+                let item = div()
+                    .id(SharedString::from(format!("sm-theme-{}", idx)))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.0))
+                    .px(px(12.0))
+                    .py(px(6.0))
+                    .text_size(px(12.0))
+                    .text_color(if is_active { colors.accent } else { colors.text_primary })
+                    .cursor_pointer()
+                    .rounded(px(4.0))
+                    .hover(|s| s.bg(colors.accent_subtle))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(
+                                svg()
+                                    .path("assets/icons/theme.svg")
+                                    .size(px(15.0))
+                                    .flex_shrink_0()
+                                    .text_color(if is_active { colors.accent } else { colors.text_secondary }),
+                            )
+                            .child(theme_name),
+                    )
+                    .child(if is_active {
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(colors.accent)
+                            .child("Active")
+                    } else {
+                        div()
+                    })
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        se_theme.update(cx, |s, _| {
+                            s.set_theme_index(idx);
+                            s.settings_theme_submenu = false;
+                            s.settings_menu = false;
+                        });
+                    });
+                menu = menu.child(item);
+            }
+        } else {
+            let se_theme_nav = se.clone();
+            menu = menu
+                .child(
+                    div()
+                        .id("sm-theme-root")
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(8.0))
+                        .px(px(12.0))
+                        .py(px(6.0))
+                        .text_size(px(12.0))
+                        .text_color(colors.text_primary)
+                        .cursor_pointer()
+                        .rounded(px(4.0))
+                        .hover(|s| s.bg(colors.accent_subtle))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(
+                                    svg()
+                                        .path("assets/icons/theme.svg")
+                                        .size(px(15.0))
+                                        .flex_shrink_0()
+                                        .text_color(colors.accent),
+                                )
+                                .child(format!("Theme: {}", theme_name)),
+                        )
+                        .child(
+                            div()
+                                .text_color(colors.text_tertiary)
+                                .child("›"),
+                        )
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            se_theme_nav.update(cx, |s, _| {
+                                s.settings_theme_submenu = true;
+                            });
+                        }),
+                )
+                .child(div().h(px(1.0)).my(px(4.0)).bg(colors.border))
+                .child(menu_item(
+                    "sm-header-toggle",
+                    header_icon,
+                    "Header Row".into(),
+                    if header_on { colors.accent } else { colors.text_secondary },
+                    se,
+                    Box::new(|s| {
+                        s.header_row_enabled = !s.header_row_enabled;
+                        s.clear_cache();
+                    }),
+                ));
+        }
+
+        Some(menu)
+    }
+    fn render_stats_menu(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let state = self.state.read(cx);
+        if !state.stats_menu {
+            return None;
+        }
+        let colors = state.current_theme();
+        let current = state.preferred_stat;
+        let _ = state;
+
+        let se = self.state.clone();
+
+        let mut inner = div()
+            .w(px(160.0))
+            .py(px(4.0))
+            .bg(colors.surface)
+            .border_1()
+            .border_color(colors.border)
+            .rounded(px(8.0))
+            .shadow_lg()
+            .text_color(colors.text_primary);
+
+        for stat in PreferredStat::ALL {
+            let is_active = stat == current;
+            let se2 = se.clone();
+            let item = div()
+                .id(SharedString::from(format!("stat-{}", stat.label())))
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .px(px(12.0))
+                .py(px(6.0))
+                .text_size(px(12.0))
+                .text_color(if is_active { colors.accent } else { colors.text_primary })
+                .cursor_pointer()
+                .rounded(px(4.0))
+                .hover(|s| s.bg(colors.accent_subtle))
+                .child(
+                    svg()
+                        .path(SharedString::from(stat.icon_path()))
+                        .size(px(14.0))
+                        .flex_shrink_0()
+                        .text_color(if is_active { colors.accent } else { colors.text_tertiary }),
+                )
+                .child(stat.label().to_string())
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    se2.update(cx, |s, _| {
+                        s.preferred_stat = stat;
+                        s.stats_menu = false;
+                    });
+                });
+            inner = inner.child(item);
+        }
+
+        Some(inner)
+    }
+
     fn render_context_menu(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         let state = self.state.read(cx);
         let (mx, my, _row, col) = state.context_menu?;
@@ -242,6 +497,7 @@ impl Render for Colomin {
                 // Full-screen click-away backdrop
                 div()
                     .id("ctx-backdrop")
+                    .occlude()
                     .absolute()
                     .top_0()
                     .left_0()
@@ -255,6 +511,77 @@ impl Render for Colomin {
                         move |_, _, cx| { se.update(cx, |s, _| { s.context_menu = None; }); }
                     })
                     .child(menu)
+            );
+        }
+
+        // Settings popover (anchored bottom-right, no full-screen backdrop)
+        if let Some(menu) = self.render_settings_menu(cx) {
+            // Invisible backdrop to close on click-away, but doesn't block interaction feel
+            root = root.child(
+                div()
+                    .id("settings-backdrop")
+                    .occlude()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .on_mouse_down(MouseButton::Left, {
+                        let se = se.clone();
+                        move |_, _, cx| {
+                            se.update(cx, |s, _| {
+                                s.settings_menu = false;
+                                s.settings_theme_submenu = false;
+                            });
+                        }
+                    })
+                    .on_mouse_down(MouseButton::Right, {
+                        let se = se.clone();
+                        move |_, _, cx| {
+                            se.update(cx, |s, _| {
+                                s.settings_menu = false;
+                                s.settings_theme_submenu = false;
+                            });
+                        }
+                    })
+                    .child(menu),
+            );
+        }
+
+        // Stats picker popover (anchored bottom-center)
+        if let Some(menu) = self.render_stats_menu(cx) {
+            let badge_cx = self.state.read(cx).stat_badge_center_x;
+            let menu_left = (badge_cx - 80.0).max(0.0);
+            root = root.child(
+                div()
+                    .id("stats-backdrop")
+                    .occlude()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .on_mouse_down(MouseButton::Left, {
+                        let se = se.clone();
+                        move |_, _, cx| {
+                            se.update(cx, |s, _| {
+                                s.stats_menu = false;
+                            });
+                        }
+                    })
+                    .on_mouse_down(MouseButton::Right, {
+                        let se = se.clone();
+                        move |_, _, cx| {
+                            se.update(cx, |s, _| {
+                                s.stats_menu = false;
+                            });
+                        }
+                    })
+                    .child(
+                        div()
+                            .absolute()
+                            .bottom(px(28.0))
+                            .left(px(menu_left))
+                            .child(menu),
+                    ),
             );
         }
 

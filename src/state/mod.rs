@@ -8,6 +8,7 @@ pub use types::{
     ColSource,
     EditAction,
     OpenFile,
+    PreferredStat,
     RowSource,
     SelectionType,
     SortDirection,

@@ -29,6 +29,44 @@ pub struct SortState {
     pub direction: SortDirection,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreferredStat {
+    Count,
+    Sum,
+    Avg,
+    Min,
+    Max,
+    Length,
+}
+
+impl PreferredStat {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Count => "Count",
+            Self::Sum => "Sum",
+            Self::Avg => "Avg",
+            Self::Min => "Min",
+            Self::Max => "Max",
+            Self::Length => "Length",
+        }
+    }
+
+    pub fn icon_path(self) -> &'static str {
+        match self {
+            Self::Count => "assets/icons/stat-count.svg",
+            Self::Sum => "assets/icons/stat-sum.svg",
+            Self::Avg => "assets/icons/stat-avg.svg",
+            Self::Min => "assets/icons/stat-min.svg",
+            Self::Max => "assets/icons/stat-max.svg",
+            Self::Length => "assets/icons/stat-length.svg",
+        }
+    }
+
+    pub const ALL: [PreferredStat; 6] = [
+        Self::Count, Self::Sum, Self::Avg, Self::Min, Self::Max, Self::Length,
+    ];
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum SelectionType {
     Cell,
@@ -83,6 +121,7 @@ pub struct OpenFile {
     pub original_columns: Vec<crate::csv_engine::types::CsvColumn>,
     pub sort_permutation: Option<Vec<usize>>,
     pub filter_indices: Option<Vec<usize>>,
+    pub columns_renamed: bool,
 }
 
 impl OpenFile {

@@ -1,7 +1,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use gpui::{App, ClickEvent, Entity, MouseDownEvent, UniformListScrollHandle};
+use gpui::{App, ClickEvent, Entity, MouseDownEvent, ScrollHandle};
 
 use crate::state::{AppState, CellCoord, SelectionType};
 
@@ -10,7 +10,7 @@ use super::TableView;
 pub(super) fn on_row_left_mouse_down(
     state_entity: &Entity<AppState>,
     horizontal_offset: &Rc<Cell<f32>>,
-    scroll_handle: &UniformListScrollHandle,
+    scroll_handle: &ScrollHandle,
     scrollbar_drag: &Rc<Cell<Option<bool>>>,
     row_index: usize,
     event: &MouseDownEvent,
@@ -21,6 +21,9 @@ pub(super) fn on_row_left_mouse_down(
         return;
     }
     let state = state_entity.read(cx);
+    if state.has_open_menu() {
+        return;
+    }
     if TableView::is_in_scrollbar_hit_region(scroll_handle, &state, event.position) {
         return;
     }
@@ -79,7 +82,7 @@ pub(super) fn on_row_left_mouse_down(
 pub(super) fn on_row_right_mouse_down(
     state_entity: &Entity<AppState>,
     horizontal_offset: &Rc<Cell<f32>>,
-    scroll_handle: &UniformListScrollHandle,
+    scroll_handle: &ScrollHandle,
     scrollbar_drag: &Rc<Cell<Option<bool>>>,
     row_index: usize,
     event: &MouseDownEvent,
@@ -89,6 +92,9 @@ pub(super) fn on_row_right_mouse_down(
         return;
     }
     let state = state_entity.read(cx);
+    if state.has_open_menu() {
+        return;
+    }
     if TableView::is_in_scrollbar_hit_region(scroll_handle, &state, event.position) {
         return;
     }
@@ -120,27 +126,29 @@ pub(super) fn on_row_right_mouse_down(
 
 pub(super) fn on_row_click(
     state_entity: &Entity<AppState>,
+    horizontal_offset: &Rc<Cell<f32>>,
     row_index: usize,
     event: &ClickEvent,
     cx: &mut App,
+    row_number_width: f32,
 ) {
     if event.click_count() < 2 {
         return;
     }
 
     let state = state_entity.read(cx);
-    let (row, col) = state
-        .selection_focus
-        .map(|f| (f.row, f.col))
-        .unwrap_or((row_index, 0));
+    let x = event.position().x.as_f32() + horizontal_offset.get();
+    let col = if x < row_number_width {
+        state.selection_focus.map(|f| f.col).unwrap_or(0)
+    } else {
+        TableView::hit_test_col_from_content_x(&state, x)
+    };
     let value = state
-        .get_cached_row(row)
-        .and_then(|r| r.get(col))
-        .cloned()
+        .get_display_cell(row_index, col)
         .unwrap_or_default();
     let _ = state;
 
     state_entity.update(cx, |s, _| {
-        s.editing_cell = Some((row, col, value));
+        s.editing_cell = Some((row_index, col, value));
     });
 }

@@ -1,4 +1,4 @@
-use gpui::{Pixels, Point, UniformListScrollHandle};
+use gpui::{Pixels, Point, ScrollHandle};
 
 use crate::state::AppState;
 
@@ -25,34 +25,41 @@ pub(super) fn hit_test_col_from_content_x(
 }
 
 pub(super) fn hit_test_row_from_window_y(
-    scroll_handle: &UniformListScrollHandle,
+    scroll_handle: &ScrollHandle,
     y_window: f32,
     total_rows: usize,
     header_height: f32,
-    row_height: f32,
+    state: &AppState,
 ) -> Option<usize> {
     if total_rows == 0 {
         return None;
     }
 
-    let sh = scroll_handle.0.borrow();
-    let viewport_h = sh.base_handle.bounds().size.height.as_f32();
-    let scroll_y = -sh.base_handle.offset().y.as_f32();
-    drop(sh);
+    let viewport_h = scroll_handle.bounds().size.height.as_f32();
+    let scroll_y = -scroll_handle.offset().y.as_f32();
 
     if viewport_h <= 0.0 {
         return None;
     }
 
     // Convert from window space to table-body local y, then add scroll offset
-    // to get absolute virtual row position.
     let local_y = (y_window - header_height).clamp(0.0, (viewport_h - 1.0).max(0.0));
-    let row = ((local_y + scroll_y) / row_height).floor().max(0.0) as usize;
-    Some(row.min(total_rows.saturating_sub(1)))
+    let abs_y = local_y + scroll_y;
+
+    // Walk through rows with variable heights to find which row abs_y falls in
+    let mut y_acc = 0.0;
+    for ri in 0..total_rows {
+        let rh = state.row_height_for(ri);
+        if abs_y < y_acc + rh {
+            return Some(ri);
+        }
+        y_acc += rh;
+    }
+    Some(total_rows.saturating_sub(1))
 }
 
 pub(super) fn is_in_scrollbar_hit_region(
-    scroll_handle: &UniformListScrollHandle,
+    scroll_handle: &ScrollHandle,
     state: &AppState,
     mouse_pos: Point<Pixels>,
     row_number_width: f32,
@@ -60,10 +67,8 @@ pub(super) fn is_in_scrollbar_hit_region(
     const SCROLLBAR_SIZE: f32 = 8.0;
     const SCROLLBAR_MARGIN: f32 = 2.0;
 
-    let sh = scroll_handle.0.borrow();
-    let bounds = sh.base_handle.bounds();
-    let max_y = sh.base_handle.max_offset().y.as_f32();
-    drop(sh);
+    let bounds = scroll_handle.bounds();
+    let max_y = scroll_handle.max_offset().y.as_f32();
 
     let vp_w = bounds.size.width.as_f32();
     let vp_h = bounds.size.height.as_f32();

@@ -39,6 +39,7 @@ fn apply_loaded_file(
         original_col_count: col_count,
         sort_permutation: None,
         filter_indices: None,
+        columns_renamed: false,
     });
     state.unfiltered_row_count = index_result.total_rows;
     state.sort_state = None;
@@ -48,6 +49,9 @@ fn apply_loaded_file(
     state.loading_message.clear();
     state.clear_cache();
     state.clear_selection();
+    state.column_widths.clear();
+    state.default_column_width = 150.0;
+    state.row_heights.clear();
 
     if let Some(chunk) = first_chunk {
         for (i, row) in chunk.rows.into_iter().enumerate() {
