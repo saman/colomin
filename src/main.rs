@@ -314,6 +314,7 @@ impl Colomin {
                     Box::new(|s| {
                         s.header_row_enabled = !s.header_row_enabled;
                         s.clear_cache();
+                        s.invalidate_row_layout();
                     }),
                 ));
         }

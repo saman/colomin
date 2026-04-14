@@ -20,7 +20,6 @@ mod stats;
 mod undo_redo;
 mod views;
 
-const ROW_NUMBER_WIDTH: f32 = 50.0;
 const HEADER_HEIGHT: f32 = 30.0;
 
 actions!(
@@ -55,7 +54,7 @@ pub struct TableView {
 
 impl TableView {
     fn hit_test_col_from_content_x(state: &AppState, x_content: f32) -> usize {
-        hit_test::hit_test_col_from_content_x(state, x_content, ROW_NUMBER_WIDTH)
+        hit_test::hit_test_col_from_content_x(state, x_content, state.row_number_width())
     }
 
     fn hit_test_row_from_window_y(&self, y_window: f32, total_rows: usize, cx: &App) -> Option<usize> {
@@ -74,7 +73,7 @@ impl TableView {
         state: &AppState,
         mouse_pos: Point<Pixels>,
     ) -> bool {
-        hit_test::is_in_scrollbar_hit_region(scroll_handle, state, mouse_pos, ROW_NUMBER_WIDTH)
+        hit_test::is_in_scrollbar_hit_region(scroll_handle, state, mouse_pos)
     }
 
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
@@ -205,12 +204,15 @@ impl TableView {
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        render_header::render_header(self, cx, ROW_NUMBER_WIDTH, HEADER_HEIGHT)
+        let rnw = self.state.read(cx).row_number_width();
+        render_header::render_header(self, cx, rnw, HEADER_HEIGHT)
     }
 
     fn render_row_el(&self, display_ri: usize, actual_ri: Option<usize>, display_num: usize, cx: &App) -> Stateful<Div> {
-        let row_height = self.state.read(cx).row_height_for(display_ri);
-        render_row::render_row_el(self, display_ri, actual_ri, display_num, cx, ROW_NUMBER_WIDTH, row_height)
+        let state = self.state.read(cx);
+        let row_height = state.row_height_for(display_ri);
+        let rnw = state.row_number_width();
+        render_row::render_row_el(self, display_ri, actual_ri, display_num, cx, rnw, row_height)
     }
 
 }
@@ -250,7 +252,8 @@ impl Render for TableView {
 
         // Render body first — it clamps horizontal_offset based on viewport/content width.
         // Header must be rendered AFTER so it reads the clamped value.
-        let body = body::render_body(self, display_rows, cx, ROW_NUMBER_WIDTH);
+        let rnw = self.state.read(cx).row_number_width();
+        let body = body::render_body(self, display_rows, cx, rnw);
         let header = self.render_header(cx);
         let colors = self.state.read(cx).current_theme();
 

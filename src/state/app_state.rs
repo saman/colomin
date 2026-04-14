@@ -6,6 +6,30 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::{CellCoord, EditAction, OpenFile, PreferredStat, SelectionType, SortState};
 
+/// Cached row position layout. Avoids O(N) prefix-sum recomputation per frame.
+pub struct RowLayout {
+    /// When true, all rows share the same height (`row_heights` is empty).
+    /// Positions are computed with simple multiplication — no Vec needed.
+    pub uniform: bool,
+    /// Prefix sums of row heights. Only populated when `uniform == false`.
+    /// `row_tops[i]` = sum of heights of rows `0..i`. Length = `total_rows + 1`.
+    pub row_tops: Vec<f32>,
+    /// Total content height (sum of all row heights).
+    pub total_height: f32,
+    /// Matches `row_layout_version` when this cache is up to date.
+    version: u64,
+}
+
+/// Cached column layout (total content width).
+pub struct ColumnLayout {
+    /// Total content width including row-number gutter.
+    pub total_width: f32,
+    /// The `row_number_width` used when this was last computed.
+    row_number_width: f32,
+    /// Matches `col_layout_version` when this cache is up to date.
+    version: u64,
+}
+
 /// The main application state, held as a GPUI Model
 pub struct AppState {
     pub file: Option<OpenFile>,
@@ -69,6 +93,11 @@ pub struct AppState {
     pub row_cache: HashMap<usize, Vec<String>>,
     row_cache_order: RefCell<VecDeque<usize>>,
     pub cache_version: u64,
+    // Layout caches (avoid O(N) recomputation per frame)
+    pub row_layout: RowLayout,
+    pub col_layout: ColumnLayout,
+    row_layout_version: u64,
+    col_layout_version: u64,
 }
 
 const ROW_CACHE_LIMIT: usize = 5000;
@@ -143,6 +172,19 @@ impl AppState {
             row_cache: HashMap::new(),
             row_cache_order: RefCell::new(VecDeque::new()),
             cache_version: 0,
+            row_layout: RowLayout {
+                uniform: true,
+                row_tops: Vec::new(),
+                total_height: 0.0,
+                version: 0,
+            },
+            col_layout: ColumnLayout {
+                total_width: 0.0,
+                row_number_width: 0.0,
+                version: 0,
+            },
+            row_layout_version: 1, // start at 1 so first ensure_* always computes
+            col_layout_version: 1,
         }
     }
 
@@ -202,6 +244,111 @@ impl AppState {
 
     pub fn row_height_for(&self, display_row: usize) -> f32 {
         self.row_heights.get(&display_row).copied().unwrap_or(self.row_height)
+    }
+
+    /// Width of the row-number gutter, scaled to fit the widest row number.
+    /// Uses 10px font: ~7px per digit + 20px padding, minimum 36px.
+    pub fn row_number_width(&self) -> f32 {
+        let total = self.display_row_count().max(1);
+        let digits = (total as f64).log10().floor() as usize + 1;
+        (digits as f32 * 7.0 + 20.0).max(36.0)
+    }
+
+    // ── Layout cache methods ──
+
+    /// Recompute the row layout cache if stale. Fast path for uniform heights.
+    pub fn ensure_row_layout(&mut self) {
+        if self.row_layout.version == self.row_layout_version {
+            return;
+        }
+        let total = self.display_row_count();
+        if self.row_heights.is_empty() {
+            self.row_layout = RowLayout {
+                uniform: true,
+                row_tops: Vec::new(),
+                total_height: total as f32 * self.row_height,
+                version: self.row_layout_version,
+            };
+        } else {
+            let mut tops = Vec::with_capacity(total + 1);
+            tops.push(0.0);
+            for ri in 0..total {
+                let rh = self.row_height_for(ri);
+                tops.push(tops[ri] + rh);
+            }
+            let total_h = *tops.last().unwrap_or(&0.0);
+            self.row_layout = RowLayout {
+                uniform: false,
+                row_tops: tops,
+                total_height: total_h,
+                version: self.row_layout_version,
+            };
+        }
+    }
+
+    /// Recompute the column layout cache if stale.
+    pub fn ensure_col_layout(&mut self, row_number_width: f32) {
+        if self.col_layout.version == self.col_layout_version
+            && self.col_layout.row_number_width == row_number_width
+        {
+            return;
+        }
+        let total_w = if let Some(file) = &self.file {
+            row_number_width
+                + file
+                    .metadata
+                    .columns
+                    .iter()
+                    .map(|c| self.column_width(c.index))
+                    .sum::<f32>()
+        } else {
+            0.0
+        };
+        self.col_layout = ColumnLayout {
+            total_width: total_w,
+            row_number_width,
+            version: self.col_layout_version,
+        };
+    }
+
+    pub fn invalidate_row_layout(&mut self) {
+        self.row_layout_version += 1;
+    }
+
+    pub fn invalidate_col_layout(&mut self) {
+        self.col_layout_version += 1;
+    }
+
+    /// O(1) for uniform heights, O(1) Vec lookup for variable.
+    pub fn row_top(&self, row: usize) -> f32 {
+        if self.row_layout.uniform {
+            row as f32 * self.row_height
+        } else {
+            self.row_layout.row_tops.get(row).copied().unwrap_or(0.0)
+        }
+    }
+
+    /// Find the row index at a given y-coordinate.
+    /// O(1) division for uniform heights, O(log N) binary search for variable.
+    pub fn row_at_y(&self, y: f32, total_rows: usize) -> usize {
+        if total_rows == 0 {
+            return 0;
+        }
+        if self.row_layout.uniform {
+            if self.row_height <= 0.0 {
+                return 0;
+            }
+            ((y / self.row_height) as usize).min(total_rows.saturating_sub(1))
+        } else {
+            match self
+                .row_layout
+                .row_tops
+                .binary_search_by(|t| t.partial_cmp(&y).unwrap())
+            {
+                Ok(i) => i.min(total_rows),
+                Err(i) => i.saturating_sub(1).min(total_rows),
+            }
+        }
     }
 
     pub fn selection_range(&self) -> Option<(usize, usize, usize, usize)> {

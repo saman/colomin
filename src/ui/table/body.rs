@@ -8,28 +8,15 @@ pub(super) fn render_body(
     cx: &mut Context<TableView>,
     row_number_width: f32,
 ) -> AnyElement {
-    // ── Compute row positions (prefix sums) for variable heights ──
-    let state_ref = view.state.read(cx);
-    let mut row_tops: Vec<f32> = Vec::with_capacity(total_rows + 1);
-    row_tops.push(0.0);
-    for ri in 0..total_rows {
-        let rh = state_ref.row_height_for(ri);
-        row_tops.push(row_tops[ri] + rh);
-    }
-    let total_h = *row_tops.last().unwrap_or(&0.0);
+    // ── Ensure layout caches are up to date (no-op if already valid) ──
+    view.state.update(cx, |s, _| {
+        s.ensure_row_layout();
+        s.ensure_col_layout(row_number_width);
+    });
 
-    // Content width for horizontal scroll
-    let content_w: f32 = if let Some(file) = &state_ref.file {
-        row_number_width
-            + file
-                .metadata
-                .columns
-                .iter()
-                .map(|c| state_ref.column_width(c.index))
-                .sum::<f32>()
-    } else {
-        0.0
-    };
+    let state_ref = view.state.read(cx);
+    let total_h = state_ref.row_layout.total_height;
+    let content_w = state_ref.col_layout.total_width;
     let header_off = !state_ref.header_row_enabled;
     let _ = state_ref;
 
@@ -54,18 +41,10 @@ pub(super) fn render_body(
     let view_top = (scroll_y - overdraw).max(0.0);
     let view_bottom = scroll_y + vp_h + overdraw;
 
-    // Binary search for first visible row
-    let vis_start = match row_tops.binary_search_by(|top| top.partial_cmp(&view_top).unwrap()) {
-        Ok(i) => i,
-        Err(i) => i.saturating_sub(1),
-    }
-    .min(total_rows);
-
-    // Binary search for last visible row
-    let vis_end = match row_tops.binary_search_by(|top| top.partial_cmp(&view_bottom).unwrap()) {
-        Ok(i) => (i + 1).min(total_rows),
-        Err(i) => i.min(total_rows),
-    };
+    let state_ref = view.state.read(cx);
+    let vis_start = state_ref.row_at_y(view_top, total_rows).min(total_rows);
+    let vis_end = (state_ref.row_at_y(view_bottom, total_rows) + 1).min(total_rows);
+    let _ = state_ref;
 
     // ── Cache visible rows ──
     if vis_start < vis_end {
@@ -82,11 +61,18 @@ pub(super) fn render_body(
     }
 
     // ── Render visible rows absolutely positioned ──
-    let mut content_inner = div().relative().h(px(total_h)).w_full();
+    // Rows are placed at VIEWPORT-RELATIVE coordinates (y - scroll_y) rather than
+    // document-absolute coordinates. This keeps rendered positions as small numbers
+    // (0 .. vp_h) and avoids f32 precision loss at large scroll offsets (e.g. row
+    // 2,000,000 → absolute y ≈ 56,000,000 px → ULP = 4 on Retina = visible gaps).
+    let mut content_inner = div().relative().size_full();
     for ri in vis_start..vis_end {
-        let data_ri = view.state.read(cx).display_row_to_actual_row(ri);
+        let (data_ri, y) = {
+            let s = view.state.read(cx);
+            (s.display_row_to_actual_row(ri), s.row_top(ri))
+        };
+        let viewport_y = y - scroll_y; // small number, no precision loss
         let display_num = ri + 1;
-        let y = row_tops[ri];
 
         let se = view.state.clone();
         let h_off_rc = view.horizontal_offset.clone();
@@ -96,7 +82,7 @@ pub(super) fn render_body(
         let row_el = view
             .render_row_el(ri, data_ri, display_num, cx)
             .absolute()
-            .top(px(y))
+            .top(px(viewport_y))
             .w_full()
             .cursor_pointer()
             .on_mouse_down(MouseButton::Left, {
@@ -152,18 +138,32 @@ pub(super) fn render_body(
         content_inner = content_inner.child(row_el);
     }
 
-    // ── Scroll container ──
-    // overflow_hidden + track_scroll: we manage both scroll axes ourselves
-    // in the capture-phase scroll-wheel handler (same pattern as Zed's editor).
-    // GPUI's built-in scroll handler is inactive (no Overflow::Scroll).
-    // track_scroll still works: prepaint clamps offset and applies
-    // with_element_offset to shift children.
+    // ── Scroll container + row overlay ──
+    // The scroll_container holds a phantom div of the full content height so that
+    // track_scroll can record the viewport bounds and clamp the scroll offset
+    // correctly — but it does NOT contain the actual rows.
+    //
+    // Rows live in row_overlay (an absolute sibling) at VIEWPORT-RELATIVE positions.
+    // This separates scroll-offset tracking from rendering, so the rendered row
+    // positions are always small numbers (0..vp_h) with no f32 precision loss.
     let scroll_container = div()
         .id("rows")
         .size_full()
         .flex_grow()
         .overflow_hidden()
         .track_scroll(&view.scroll_handle)
+        // Phantom div: gives track_scroll the correct content height for clamping.
+        .child(div().h(px(total_h)).w_full());
+
+    // Row overlay: absolutely fills the same region as scroll_container.
+    // Rows inside are clipped to the viewport; no scroll transform is applied here.
+    let row_overlay = div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .w_full()
+        .h_full()
+        .overflow_hidden()
         .child(content_inner);
 
     // ── Scrollbar constants ──
@@ -440,6 +440,7 @@ pub(super) fn render_body(
                 } else {
                     s.column_widths.insert(col_idx, new_w);
                 }
+                s.invalidate_col_layout();
             });
             window.refresh();
         });
@@ -488,6 +489,7 @@ pub(super) fn render_body(
                     // Per-row resize
                     s.row_heights.insert(target, new_h);
                 }
+                s.invalidate_row_layout();
             });
             window.refresh();
         });
@@ -617,6 +619,7 @@ pub(super) fn render_body(
         .relative()
         .overflow_hidden()
         .child(scroll_container)
+        .child(row_overlay)
         .child(scrollbar_canvas)
         .children(v_bar)
         .children(h_bar)

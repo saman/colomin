@@ -46,23 +46,14 @@ pub(super) fn hit_test_row_from_window_y(
     let local_y = (y_window - header_height).clamp(0.0, (viewport_h - 1.0).max(0.0));
     let abs_y = local_y + scroll_y;
 
-    // Walk through rows with variable heights to find which row abs_y falls in
-    let mut y_acc = 0.0;
-    for ri in 0..total_rows {
-        let rh = state.row_height_for(ri);
-        if abs_y < y_acc + rh {
-            return Some(ri);
-        }
-        y_acc += rh;
-    }
-    Some(total_rows.saturating_sub(1))
+    // Use cached row layout for O(1) uniform or O(log N) variable lookup
+    Some(state.row_at_y(abs_y, total_rows).min(total_rows.saturating_sub(1)))
 }
 
 pub(super) fn is_in_scrollbar_hit_region(
     scroll_handle: &ScrollHandle,
     state: &AppState,
     mouse_pos: Point<Pixels>,
-    row_number_width: f32,
 ) -> bool {
     const SCROLLBAR_SIZE: f32 = 8.0;
     const SCROLLBAR_MARGIN: f32 = 2.0;
@@ -76,17 +67,7 @@ pub(super) fn is_in_scrollbar_hit_region(
         return false;
     }
 
-    let content_w = if let Some(file) = &state.file {
-        row_number_width
-            + file
-                .metadata
-                .columns
-                .iter()
-                .map(|c| state.column_width(c.index))
-                .sum::<f32>()
-    } else {
-        0.0
-    };
+    let content_w = state.col_layout.total_width;
     let max_x = (content_w - vp_w).max(0.0);
 
     let has_v_bar = max_y > 0.0;

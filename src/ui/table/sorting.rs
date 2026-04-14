@@ -45,6 +45,7 @@ pub(super) fn maybe_apply_pending_sort(view: &TableView, cx: &mut Context<TableV
                         },
                     });
                     s.clear_cache();
+                    s.invalidate_row_layout();
                 }
             });
         }

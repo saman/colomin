@@ -52,6 +52,8 @@ fn apply_loaded_file(
     state.column_widths.clear();
     state.default_column_width = 150.0;
     state.row_heights.clear();
+    state.invalidate_row_layout();
+    state.invalidate_col_layout();
 
     if let Some(chunk) = first_chunk {
         for (i, row) in chunk.rows.into_iter().enumerate() {
