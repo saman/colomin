@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use gpui::{rgb, Hsla};
+use egui::Color32;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
@@ -8,23 +8,23 @@ use std::path::Path;
 /// The resolved colors used throughout the app
 #[derive(Debug, Clone)]
 pub struct ThemeColors {
-    pub bg: Hsla,
-    pub surface: Hsla,
-    pub border: Hsla,
-    pub text_primary: Hsla,
-    pub text_secondary: Hsla,
-    pub text_tertiary: Hsla,
-    pub accent: Hsla,
-    pub accent_hover: Hsla,
-    pub accent_text: Hsla,
-    pub accent_subtle: Hsla,
-    pub edited: Hsla,
-    pub hover_row: Hsla,
-    pub danger: Hsla,
-    pub status_bar_bg: Hsla,
-    pub gutter_bg: Hsla,
-    pub line_number: Hsla,
-    pub selection: Hsla,
+    pub bg: Color32,
+    pub surface: Color32,
+    pub border: Color32,
+    pub text_primary: Color32,
+    pub text_secondary: Color32,
+    pub text_tertiary: Color32,
+    pub accent: Color32,
+    pub accent_hover: Color32,
+    pub accent_text: Color32,
+    pub accent_subtle: Color32,
+    pub edited: Color32,
+    pub hover_row: Color32,
+    pub danger: Color32,
+    pub status_bar_bg: Color32,
+    pub gutter_bg: Color32,
+    pub line_number: Color32,
+    pub selection: Color32,
 }
 
 /// A loaded Zed theme with a name and resolved colors
@@ -68,52 +68,51 @@ struct ZedPlayer {
     selection: Option<String>,
 }
 
-// ── Color parsing ──
+// ── Color helpers ──
 
-fn parse_hex_color(s: &str) -> Option<Hsla> {
+fn hex(color: u32) -> Color32 {
+    let r = ((color >> 16) & 0xFF) as u8;
+    let g = ((color >> 8) & 0xFF) as u8;
+    let b = (color & 0xFF) as u8;
+    Color32::from_rgb(r, g, b)
+}
+
+fn parse_hex_color(s: &str) -> Option<Color32> {
     let s = s.trim_start_matches('#');
-    let (r, g, b, a) = match s.len() {
+    match s.len() {
         6 => {
             let r = u8::from_str_radix(&s[0..2], 16).ok()?;
             let g = u8::from_str_radix(&s[2..4], 16).ok()?;
             let b = u8::from_str_radix(&s[4..6], 16).ok()?;
-            (r, g, b, 255u8)
+            Some(Color32::from_rgb(r, g, b))
         }
         8 => {
             let r = u8::from_str_radix(&s[0..2], 16).ok()?;
             let g = u8::from_str_radix(&s[2..4], 16).ok()?;
             let b = u8::from_str_radix(&s[4..6], 16).ok()?;
             let a = u8::from_str_radix(&s[6..8], 16).ok()?;
-            (r, g, b, a)
+            Some(Color32::from_rgba_unmultiplied(r, g, b, a))
         }
-        _ => return None,
-    };
-    Some(rgba_to_hsla(r, g, b, a as f32 / 255.0))
+        _ => None,
+    }
 }
 
-fn rgba_to_hsla(r: u8, g: u8, b: u8, a: f32) -> Hsla {
-    // Use gpui's rgb conversion for accuracy
-    let rgba = gpui::rgba(
-        ((r as u32) << 24) | ((g as u32) << 16) | ((b as u32) << 8) | (a * 255.0) as u32,
-    );
-    rgba.into()
-}
-
-fn hex(color: u32) -> Hsla {
-    rgb(color).into()
+fn with_opacity(color: Color32, opacity: f32) -> Color32 {
+    let a = (opacity * 255.0).round() as u8;
+    Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), a)
 }
 
 // ── Token extraction ──
 
 impl ZedStyle {
-    fn get_color(&self, key: &str) -> Option<Hsla> {
+    fn get_color(&self, key: &str) -> Option<Color32> {
         self.tokens
             .get(key)
             .and_then(|v| v.as_str())
             .and_then(parse_hex_color)
     }
 
-    fn get_color_or(&self, key: &str, fallback: Hsla) -> Hsla {
+    fn get_color_or(&self, key: &str, fallback: Color32) -> Color32 {
         self.get_color(key).unwrap_or(fallback)
     }
 
@@ -142,7 +141,7 @@ fn zed_style_to_colors(style: &ZedStyle, appearance: ThemeAppearance) -> ThemeCo
         .first()
         .and_then(|p| p.selection.as_ref())
         .and_then(|c| parse_hex_color(c))
-        .unwrap_or_else(|| accent.opacity(0.15));
+        .unwrap_or_else(|| with_opacity(accent, 0.15));
 
     let bg = style.get_color_or(
         "background",
@@ -245,6 +244,43 @@ fn zed_style_to_colors(style: &ZedStyle, appearance: ThemeAppearance) -> ThemeCo
         line_number,
         selection,
     }
+}
+
+/// Apply a ThemeColors palette to an egui Context.
+pub fn apply_theme(ctx: &egui::Context, colors: &ThemeColors) {
+    let mut visuals = egui::Visuals::light();
+
+    visuals.panel_fill = colors.bg;
+    visuals.window_fill = colors.surface;
+    visuals.extreme_bg_color = colors.surface;
+    visuals.faint_bg_color = colors.surface;
+
+    visuals.widgets.noninteractive.bg_fill = colors.surface;
+    visuals.widgets.noninteractive.weak_bg_fill = colors.surface;
+    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, colors.border);
+    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, colors.text_primary);
+
+    visuals.widgets.inactive.bg_fill = colors.surface;
+    visuals.widgets.inactive.weak_bg_fill = colors.surface;
+    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, colors.border);
+    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, colors.text_primary);
+
+    visuals.widgets.hovered.bg_fill = colors.hover_row;
+    visuals.widgets.hovered.weak_bg_fill = colors.hover_row;
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, colors.accent);
+    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, colors.text_primary);
+
+    visuals.widgets.active.bg_fill = colors.accent_subtle;
+    visuals.widgets.active.weak_bg_fill = colors.accent_subtle;
+    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, colors.accent);
+    visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, colors.text_primary);
+
+    visuals.selection.bg_fill = colors.selection;
+    visuals.selection.stroke = egui::Stroke::new(1.0, colors.accent);
+
+    visuals.override_text_color = Some(colors.text_primary);
+
+    ctx.set_visuals(visuals);
 }
 
 // ── Public API ──

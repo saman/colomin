@@ -68,4 +68,13 @@ fi
 
 echo ""
 echo "Done: $BUNDLE_DIR"
+
+# Refresh Launch Services so Finder picks up the updated bundle
+# (document types, icon, executable). Without this, macOS can get
+# stuck on an older cached version of the app.
+LSREG="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [ -x "$LSREG" ]; then
+    "$LSREG" -f "$BUNDLE_DIR" >/dev/null 2>&1 && echo "Registered with Launch Services."
+fi
+
 echo "Run with: open \"$BUNDLE_DIR\""

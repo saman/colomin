@@ -2,16 +2,22 @@
 name = "colomin"
 version = "0.1.0"
 edition = "2021"
-description = "A native CSV editor built with GPUI"
+description = "A native CSV editor built with egui"
 
 [dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", branch = "main" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", branch = "main", features = ["font-kit"] }
+eframe = { version = "0.31", features = [] }
+egui = { version = "0.31", features = [] }
+egui_extras = { version = "0.31", features = [] }
 anyhow = "1"
 csv = "1.3"
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSURL"] }
 
 [profile.dev]
 opt-level = 1
@@ -19,3 +25,4 @@ opt-level = 1
 [profile.release]
 opt-level = 3
 lto = true
+codegen-units = 1
