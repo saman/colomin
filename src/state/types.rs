@@ -84,13 +84,31 @@ pub struct CellCoord {
 pub enum EditAction {
     CellEdit {
         row: usize,
+        /// Display column index (used to restore cursor on undo/redo).
         col: usize,
+        /// Physical CSV column index (used for `file.edits` key lookup).
+        physical_col: usize,
         old_had_edit: bool,
         old_value: String,
         new_value: String,
     },
     BatchCellEdit {
         edits: Vec<BatchEditEntry>,
+    },
+    RenameColumn {
+        col: usize,
+        old_name: String,
+        new_name: String,
+    },
+    /// Swap two display columns (col_order entries). Undo = swap back.
+    MoveColumn {
+        from_col: usize,
+        to_col: usize,
+    },
+    /// Swap two display rows (sort_permutation entries). Undo = swap back.
+    MoveRow {
+        from_row: usize,
+        to_row: usize,
     },
     Structural {
         description: String,
@@ -100,7 +118,10 @@ pub enum EditAction {
 #[derive(Debug, Clone)]
 pub struct BatchEditEntry {
     pub row: usize,
+    /// Display column index.
     pub col: usize,
+    /// Physical CSV column index.
+    pub physical_col: usize,
     pub old_had_edit: bool,
     pub old_value: String,
     pub new_value: String,

@@ -73,6 +73,12 @@ pub struct AppState {
     pub settings_menu: bool,
     /// Whether the settings menu is currently showing the theme list submenu
     pub settings_theme_submenu: bool,
+    /// Whether the settings menu is currently showing the font list submenu
+    pub settings_font_submenu: bool,
+    /// Whether the settings menu is currently showing the debug submenu
+    pub settings_debug_submenu: bool,
+    /// Currently selected font family name. None = egui default.
+    pub selected_font: Option<String>,
     /// View-only header mode toggle. When false, header labels use Excel letters.
     pub header_row_enabled: bool,
     /// Whether the user is currently dragging to select cells
@@ -145,7 +151,7 @@ impl AppState {
             redo_stack: Vec::new(),
             column_widths: HashMap::new(),
             default_column_width: 150.0,
-            row_height: 28.0,
+            row_height: 24.0,
             row_heights: HashMap::new(),
             search_query: String::new(),
             search_results: Vec::new(),
@@ -161,6 +167,9 @@ impl AppState {
             context_menu: None,
             settings_menu: false,
             settings_theme_submenu: false,
+            settings_font_submenu: false,
+            settings_debug_submenu: false,
+            selected_font: None,
             header_row_enabled: true,
             is_dragging: false,
             preferred_stat: PreferredStat::Count,
@@ -229,13 +238,30 @@ impl AppState {
         }
     }
 
-    pub fn get_display_cell(&self, display_row: usize, col: usize) -> Option<String> {
+    /// Map a display column index to the physical CSV column index.
+    /// When `col_order` is not set, returns `display_col` unchanged (identity).
+    pub fn display_to_physical_col(&self, display_col: usize) -> usize {
+        if let Some(ref file) = self.file {
+            if let Some(ref order) = file.col_order {
+                if let Some(src) = order.get(display_col) {
+                    return match src {
+                        super::ColSource::Original(idx) => *idx,
+                        super::ColSource::Inserted(_) => display_col,
+                    };
+                }
+            }
+        }
+        display_col
+    }
+
+    pub fn get_display_cell(&self, display_row: usize, display_col: usize) -> Option<String> {
+        let physical_col = self.display_to_physical_col(display_col);
         self.get_display_row(display_row)
-            .and_then(|row| row.get(col).cloned())
+            .and_then(|row| row.get(physical_col).cloned())
     }
 
     pub fn col_count(&self) -> usize {
-        self.file.as_ref().map_or(0, |f| f.metadata.columns.len())
+        self.file.as_ref().map_or(0, |f| f.current_col_count())
     }
 
     pub fn column_width(&self, col: usize) -> f32 {

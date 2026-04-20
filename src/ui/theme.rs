@@ -415,7 +415,7 @@ pub fn colomin_dark() -> ThemeColors {
         accent: hex(0x60A5FA),
         accent_hover: hex(0x3B82F6),
         accent_text: hex(0x08111F),
-        accent_subtle: hex(0x10233D),
+        accent_subtle: hex(0x172554),
         edited: hex(0x3A2410),
         hover_row: hex(0x1E293B),
         danger: hex(0xEF4444),

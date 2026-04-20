@@ -31,30 +31,8 @@ cp "$SRC_BINARY" "$BUNDLE_DIR/Contents/MacOS/$BINARY_NAME"
 # Copy Info.plist
 cp "$PROJECT_DIR/Info.plist" "$BUNDLE_DIR/Contents/"
 
-# Convert icon.png to .icns
-ICONSET_DIR=$(mktemp -d)/AppIcon.iconset
-mkdir -p "$ICONSET_DIR"
-
-for size in 16 32 64 128 256 512 1024; do
-    cp "$PROJECT_DIR/icon.png" "$ICONSET_DIR/_tmp.png"
-    sips --resampleHeightWidth "$size" "$size" "$ICONSET_DIR/_tmp.png" > /dev/null 2>&1
-    case $size in
-        16)   cp "$ICONSET_DIR/_tmp.png" "$ICONSET_DIR/icon_16x16.png" ;;
-        32)   cp "$ICONSET_DIR/_tmp.png" "$ICONSET_DIR/icon_16x16@2x.png"
-              cp "$ICONSET_DIR/_tmp.png" "$ICONSET_DIR/icon_32x32.png" ;;
-        64)   cp "$ICONSET_DIR/_tmp.png" "$ICONSET_DIR/icon_32x32@2x.png" ;;
-        128)  cp "$ICONSET_DIR/_tmp.png" "$ICONSET_DIR/icon_128x128.png" ;;
-        256)  cp "$ICONSET_DIR/_tmp.png" "$ICONSET_DIR/icon_128x128@2x.png"
-              cp "$ICONSET_DIR/_tmp.png" "$ICONSET_DIR/icon_256x256.png" ;;
-        512)  cp "$ICONSET_DIR/_tmp.png" "$ICONSET_DIR/icon_256x256@2x.png"
-              cp "$ICONSET_DIR/_tmp.png" "$ICONSET_DIR/icon_512x512.png" ;;
-        1024) cp "$ICONSET_DIR/_tmp.png" "$ICONSET_DIR/icon_512x512@2x.png" ;;
-    esac
-done
-rm -f "$ICONSET_DIR/_tmp.png"
-
-iconutil -c icns "$ICONSET_DIR" -o "$BUNDLE_DIR/Contents/Resources/AppIcon.icns"
-rm -rf "$(dirname "$ICONSET_DIR")"
+# Copy the prebuilt .icns directly (same approach as the Tauri build).
+cp "$PROJECT_DIR/assets/Colomin.icns" "$BUNDLE_DIR/Contents/Resources/icon.icns"
 
 # Copy themes if present
 if [ -d "$PROJECT_DIR/themes" ]; then
