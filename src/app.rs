@@ -684,6 +684,7 @@ impl eframe::App for ColominApp {
         let mut font_choice: Option<Option<String>> = None;
         let mut debug_toggle: Option<bool> = None;
         let mut reveal_log: bool = false;
+        let mut open_log: bool = false;
         Self::show_status_bar_for(
             tab,
             &self.available_fonts,
@@ -694,6 +695,7 @@ impl eframe::App for ColominApp {
             self.debug_log_enabled,
             &mut debug_toggle,
             &mut reveal_log,
+            &mut open_log,
             ctx,
         );
 
@@ -735,6 +737,12 @@ impl eframe::App for ColominApp {
         if reveal_log {
             if let Some(path) = crate::debug_log::current_log_path() {
                 Self::reveal_in_finder(&path);
+            }
+        }
+
+        if open_log {
+            if let Some(path) = crate::debug_log::current_log_path() {
+                let _ = std::process::Command::new("open").arg(&path).spawn();
             }
         }
 
@@ -881,6 +889,7 @@ impl ColominApp {
         debug_log_enabled: bool,
         debug_toggle: &mut Option<bool>,
         reveal_log: &mut bool,
+        open_log: &mut bool,
         ctx: &egui::Context,
     ) {
         use crate::ui::stats as st;
@@ -929,6 +938,7 @@ impl ColominApp {
         let mut toggle_tab_mode: Option<bool>                        = None;
         let mut new_debug_toggle: Option<bool>                       = None;
         let mut new_reveal_log:  bool                                = false;
+        let mut new_open_log:    bool                                = false;
 
         egui::TopBottomPanel::bottom("status_bar")
             .frame(egui::Frame::NONE.fill(fill).inner_margin(egui::Margin::symmetric(8, 4)))
@@ -1050,7 +1060,8 @@ impl ColominApp {
                                         ui.with_layout(
                                             egui::Layout::top_down_justified(egui::Align::LEFT),
                                             |ui| {
-                                        ui.set_min_width(240.0);
+                                        ui.set_min_width(180.0);
+                                        ui.set_max_width(200.0);
                                 if font_submenu {
                                     // Font submenu — same layout idiom as Theme submenu.
                                     if Self::menu_row(
@@ -1190,6 +1201,14 @@ impl ColominApp {
                                                     .monospace(),
                                             );
                                             ui.add_space(4.0);
+                                            if Self::menu_row(
+                                                ui, "edit", colors.accent,
+                                                egui::RichText::new("Open Log File").size(12.0).color(colors.accent),
+                                                false, colors.accent,
+                                                |_ui| {},
+                                            ).clicked() {
+                                                new_open_log = true;
+                                            }
                                             if Self::menu_row(
                                                 ui, "search", colors.accent,
                                                 egui::RichText::new("Reveal in Finder").size(12.0).color(colors.accent),
@@ -1354,6 +1373,9 @@ impl ColominApp {
         }
         if new_reveal_log {
             *reveal_log = true;
+        }
+        if new_open_log {
+            *open_log = true;
         }
     }
 

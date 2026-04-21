@@ -314,7 +314,8 @@ impl TableView {
 
                             // Right-click context menu on column header.
                             resp.context_menu(|ui| {
-                                ui.set_min_width(185.0);
+                                ui.set_min_width(140.0);
+                                ui.set_max_width(160.0);
                                 let ic = colors.text_secondary;
                                 let tc = colors.text_primary;
                                 if icon_menu_item(ui, "insert-column-left", "Insert Column Left", ic, tc, false).clicked() {
@@ -363,6 +364,12 @@ impl TableView {
                                         self.renaming_col = Some((col_idx, name.clone()));
                                         ui.close_menu();
                                     }
+                                }
+                                ui.separator();
+                                let danger = colors.danger;
+                                if icon_menu_item(ui, "delete-column", "Delete Column", danger, danger, false).clicked() {
+                                    delete_col(state, col_idx);
+                                    ui.close_menu();
                                 }
                             });
                         }
@@ -421,7 +428,8 @@ impl TableView {
                         // Right-click context menu on row gutter.
                         let total_rows_ctx = row_count;
                         resp.context_menu(|ui| {
-                            ui.set_min_width(160.0);
+                            ui.set_min_width(130.0);
+                            ui.set_max_width(150.0);
                             let ic = colors.text_secondary;
                             let tc = colors.text_primary;
                             if icon_menu_item(ui, "insert-row-above", "Insert Row Above", ic, tc, false).clicked() {
@@ -444,6 +452,12 @@ impl TableView {
                                     move_row(state, display_row, display_row + 1);
                                     ui.close_menu();
                                 }
+                            }
+                            ui.separator();
+                            let danger = colors.danger;
+                            if icon_menu_item(ui, "delete-row", "Delete Row", danger, danger, false).clicked() {
+                                delete_row(state, display_row);
+                                ui.close_menu();
                             }
                         });
 
@@ -505,7 +519,7 @@ impl TableView {
                                      else { surf };
 
                             if is_editing {
-                                // Paint background behind the TextEdit.
+                                // In-place editing: same background and border as a normal cell.
                                 let edit_rect = ui.max_rect();
                                 ui.painter().rect_filled(edit_rect, 0.0, bg);
                                 paint_bottom_border(ui, edit_rect, border);
@@ -519,7 +533,9 @@ impl TableView {
                                 let te = egui::TextEdit::singleline(buf)
                                     .id(edit_id)
                                     .font(egui::FontId::proportional(12.0))
-                                    .desired_width(desired_w);
+                                    .desired_width(desired_w)
+                                    .frame(false)
+                                    .margin(egui::Margin::symmetric(4, 0));
                                 let resp = ui.add(te);
                                 // Only request focus when not yet focused; calling every
                                 // frame interferes with lost_focus() detection.
@@ -646,24 +662,29 @@ impl TableView {
                                 }
 
                                 resp.context_menu(|ui| {
-                                    if ui.button("Copy").clicked() {
+                                    ui.set_min_width(130.0);
+                                    ui.set_max_width(150.0);
+                                    let ic = colors.text_secondary;
+                                    let tc = colors.text_primary;
+                                    if icon_menu_item(ui, "copy", "Copy", ic, tc, false).clicked() {
                                         ui.ctx().copy_text(value.clone());
                                         ui.close_menu();
                                     }
-                                    if ui.button("Clear cell").clicked() {
+                                    if icon_menu_item(ui, "edit", "Clear Cell", ic, tc, false).clicked() {
                                         commit_edit(state, display_row, col_idx, String::new());
                                         ui.close_menu();
                                     }
                                     ui.separator();
-                                    if ui.button("Sort ↑").clicked() {
+                                    if icon_menu_item(ui, "sort-asc", "Sort Ascending", ic, tc, false).clicked() {
                                         state.pending_sort = Some((col_idx, true));
                                         ui.close_menu();
                                     }
-                                    if ui.button("Sort ↓").clicked() {
+                                    if icon_menu_item(ui, "sort-desc", "Sort Descending", ic, tc, false).clicked() {
                                         state.pending_sort = Some((col_idx, false));
                                         ui.close_menu();
                                     }
-                                    if ui.button("Reset row height").clicked() {
+                                    ui.separator();
+                                    if icon_menu_item(ui, "chevron-up", "Reset Row Height", ic, tc, false).clicked() {
                                         state.row_heights.remove(&display_row);
                                         state.invalidate_row_layout();
                                         ui.close_menu();
@@ -675,37 +696,42 @@ impl TableView {
                 });
             }); // closes .body()
 
-                // Paint the header border in Order::Foreground so it renders
-                // on top of all body cells, regardless of scroll position.
+                // Paint the header border in Order::Middle so it renders on top
+                // of body cells but below context menus and tooltips.
                 let y = header_bottom_y.get();
                 let l = header_left_x.get();
                 let r = header_right_x.get();
                 if y > 0.0 && r > l {
-                    let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("header_sep"));
-                    ui.ctx().layer_painter(layer).rect_filled(
+                    let layer = egui::LayerId::new(egui::Order::Middle, egui::Id::new("header_sep"));
+                    let body_clip = ui.clip_rect();
+                    let sb = ui.spacing().scroll.bar_width + ui.spacing().scroll.bar_outer_margin + 2.0;
+                    let clip = egui::Rect::from_min_max(
+                        body_clip.min,
+                        egui::pos2(body_clip.max.x - sb, body_clip.max.y - sb),
+                    );
+                    ui.ctx().layer_painter(layer).with_clip_rect(clip).rect_filled(
                         egui::Rect::from_min_max(egui::pos2(l, y - 4.0), egui::pos2(r, y - 3.0)),
                         0.0,
                         header_sep,
                     );
                 }
 
-                // Marching-ants selection border drawn on a dedicated foreground
-                // layer so it sits on top of all cells regardless of paint order.
+                // Marching-ants selection border drawn on Order::Middle so it
+                // sits on top of cells but below context menus and tooltips.
                 if let Some(sr) = sel_rect_acc.get() {
                     if sr.is_finite() && sr.width() > 1.0 && sr.height() > 1.0 {
                         let layer = egui::LayerId::new(
-                            egui::Order::Foreground,
+                            egui::Order::Middle,
                             egui::Id::new("sel_dashed"),
                         );
                         // Clip to the table body region so the border can never
-                        // bleed over the sticky header above or the status bar
-                        // below. The ScrollArea's clip_rect gives us the
-                        // visible body area; we trim the top to start below
-                        // the header.
+                        // bleed over the sticky header above, the status bar
+                        // below, or the scrollbars at the edges.
                         let body_clip = ui.clip_rect();
+                        let sb = ui.spacing().scroll.bar_width + ui.spacing().scroll.bar_outer_margin + 2.0;
                         let clip = egui::Rect::from_min_max(
                             egui::pos2(body_clip.min.x, header_bottom_y.get()),
-                            body_clip.max,
+                            egui::pos2(body_clip.max.x - sb, body_clip.max.y - sb),
                         );
                         let painter = ui.ctx().layer_painter(layer).with_clip_rect(clip);
                         if is_single_cell {
@@ -1244,6 +1270,66 @@ fn insert_col(state: &mut AppState, at: usize) {
     state.redo_stack.clear();
 }
 
+/// Delete a column at display position `at`.
+fn delete_col(state: &mut AppState, at: usize) {
+    let Some(ref mut file) = state.file else { return };
+    file.ensure_col_order();
+    if let Some(ref mut order) = file.col_order {
+        if at < order.len() && order.len() > 1 {
+            order.remove(at);
+        } else {
+            return;
+        }
+    }
+    // Clear selection if it references the deleted column.
+    state.selected_columns.retain(|&c| c != at);
+    if let Some(anchor) = state.selection_anchor {
+        if anchor.col == at { state.selection_anchor = None; state.selection_focus = None; }
+    }
+    state.row_cache.clear();
+    state.cache_version += 1;
+    state.undo_stack.push(crate::state::EditAction::Structural {
+        description: format!("Delete column at {}", at),
+    });
+    state.redo_stack.clear();
+}
+
+/// Delete a row at display position `at`.
+fn delete_row(state: &mut AppState, at: usize) {
+    let Some(ref mut file) = state.file else { return };
+    // Ensure both ordering systems exist.
+    file.ensure_row_order();
+    if file.sort_permutation.is_none() {
+        let n = file.metadata.total_rows;
+        file.sort_permutation = Some((0..n).collect());
+    }
+    // Guard: must have more than 1 row, and `at` must be in range.
+    let order_len = file.row_order.as_ref().map(|o| o.len()).unwrap_or(0);
+    if at >= order_len || order_len <= 1 { return; }
+    // Remove from row_order (structural — used by save path).
+    if let Some(ref mut order) = file.row_order {
+        order.remove(at);
+    }
+    // Remove from sort_permutation (display — used by render/cache path).
+    if let Some(ref mut perm) = file.sort_permutation {
+        if at < perm.len() {
+            perm.remove(at);
+        }
+    }
+    // Clear selection if it references the deleted row.
+    state.selected_rows.retain(|&r| r != at);
+    if let Some(anchor) = state.selection_anchor {
+        if anchor.row == at { state.selection_anchor = None; state.selection_focus = None; }
+    }
+    state.row_cache.clear();
+    state.cache_version += 1;
+    state.invalidate_row_layout();
+    state.undo_stack.push(crate::state::EditAction::Structural {
+        description: format!("Delete row at {}", at),
+    });
+    state.redo_stack.clear();
+}
+
 // ── Context menu helper ───────────────────────────────────────────────────────
 
 /// A selectable menu row with a leading SVG icon.
@@ -1254,13 +1340,34 @@ fn icon_menu_item(
     label: &str,
     icon_color: egui::Color32,
     text_color: egui::Color32,
-    active: bool,
+    _active: bool,
 ) -> egui::Response {
-    let resp = ui.horizontal(|ui| {
-        ui.add(crate::ui::icons::icon(icon_name, icon_color));
-        ui.selectable_label(active,
-            egui::RichText::new(label).size(12.0).color(text_color))
-    });
-    // Combine the row response with the selectable so clicking anywhere works.
-    resp.response | resp.inner
+    let row_h = 26.0;
+    let avail_w = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(avail_w, row_h),
+        egui::Sense::click(),
+    );
+    let bg = if response.hovered() {
+        ui.visuals().widgets.hovered.weak_bg_fill
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    if bg != egui::Color32::TRANSPARENT {
+        ui.painter().rect_filled(rect, 4.0, bg);
+    }
+    let inner = rect.shrink2(egui::vec2(8.0, 0.0));
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(inner)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        |ui| {
+            ui.add(crate::ui::icons::icon(icon_name, icon_color));
+            ui.add_space(6.0);
+            ui.add(egui::Label::new(
+                egui::RichText::new(label).size(12.0).color(text_color),
+            ).selectable(false));
+        },
+    );
+    response
 }
