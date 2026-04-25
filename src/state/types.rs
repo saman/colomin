@@ -67,6 +67,37 @@ impl PreferredStat {
     ];
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+pub enum CopyMode {
+    #[default]
+    Text,
+    Csv,
+    Json,
+    Markdown,
+}
+
+impl CopyMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Text     => "Text",
+            Self::Csv      => "CSV",
+            Self::Json     => "JSON",
+            Self::Markdown => "Markdown",
+        }
+    }
+
+    pub fn icon_name(self) -> &'static str {
+        match self {
+            Self::Text     => "copy-text",
+            Self::Csv      => "copy-csv",
+            Self::Json     => "copy-json",
+            Self::Markdown => "copy-markdown",
+        }
+    }
+
+    pub const ALL: [CopyMode; 4] = [Self::Text, Self::Csv, Self::Json, Self::Markdown];
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum SelectionType {
     Cell,

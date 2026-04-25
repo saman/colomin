@@ -6,6 +6,7 @@ pub use types::{
     BatchEditEntry,
     CellCoord,
     ColSource,
+    CopyMode,
     EditAction,
     OpenFile,
     PreferredStat,

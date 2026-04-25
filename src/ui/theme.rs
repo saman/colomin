@@ -34,8 +34,6 @@ pub struct Theme {
     pub colors: ThemeColors,
 }
 
-// Keep the old type alias so existing code doesn't break during migration.
-pub type ZedTheme = Theme;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ThemeAppearance {

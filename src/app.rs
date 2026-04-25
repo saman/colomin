@@ -65,6 +65,8 @@ impl TabState {
 // ── App config (persisted) ────────────────────────────────────────────────────
 
 fn default_tab_mode() -> bool { true }
+fn default_font_size() -> f32 { 12.0 }
+fn default_ui_scale() -> f32 { 1.0 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct AppConfig {
@@ -72,6 +74,12 @@ struct AppConfig {
     selected_font: Option<String>,
     #[serde(default = "default_tab_mode")]
     tab_mode: bool,
+    #[serde(default = "default_font_size")]
+    font_size: f32,
+    #[serde(default = "default_ui_scale")]
+    ui_scale: f32,
+    #[serde(default)]
+    copy_mode: crate::state::CopyMode,
 }
 
 impl Default for AppConfig {
@@ -79,6 +87,9 @@ impl Default for AppConfig {
         Self {
             selected_font: None,
             tab_mode: default_tab_mode(),
+            font_size: default_font_size(),
+            ui_scale: default_ui_scale(),
+            copy_mode: crate::state::CopyMode::Text,
         }
     }
 }
@@ -132,6 +143,8 @@ pub struct ColominApp {
     cli_arg_dedup: Option<String>,
     started_at: std::time::Instant,
     debug_log_enabled: bool,
+    /// User-chosen zoom multiplier (1.0 = OS default, applied via ctx.set_zoom_factor).
+    ui_scale: f32,
 }
 
 impl ColominApp {
@@ -144,6 +157,7 @@ impl ColominApp {
 
         let config = AppConfig::load();
         let tab_mode = config.tab_mode;
+        cc.egui_ctx.set_zoom_factor(config.ui_scale);
 
         let mut initial_tab = TabState::new();
         crate::ui::theme::apply_theme(&cc.egui_ctx, &initial_tab.state.current_theme());
@@ -154,6 +168,8 @@ impl ColominApp {
             Self::apply_font(&cc.egui_ctx, Some(font_name), &available_fonts);
         }
         initial_tab.state.selected_font = config.selected_font;
+        initial_tab.state.font_size = config.font_size;
+        initial_tab.state.copy_mode = config.copy_mode;
 
         let cli_arg_path: Option<String> = std::env::args().nth(1)
             .filter(|a| !a.starts_with('-'));
@@ -173,6 +189,7 @@ impl ColominApp {
             cli_arg_dedup: cli_arg_path,
             started_at: std::time::Instant::now(),
             debug_log_enabled: false,
+            ui_scale: config.ui_scale,
         }
     }
 
@@ -470,8 +487,37 @@ impl eframe::App for ColominApp {
         });
         if cycle_theme { tab.state.cycle_theme(); }
 
-        // ── Apply theme ──
+        // Pre-read tab config fields so zoom shortcuts don't need to re-borrow self.tabs.
+        let zoom_selected_font = tab.state.selected_font.clone();
+        let zoom_font_size     = tab.state.font_size;
+        let zoom_copy_mode     = tab.state.copy_mode;
+
+        // ── Zoom shortcuts: Cmd+= / Cmd+- / Cmd+0 ──
+        let zoom_in    = ctx.input(|i| i.key_pressed(egui::Key::Equals) && i.modifiers.command);
+        let zoom_out   = ctx.input(|i| i.key_pressed(egui::Key::Minus)  && i.modifiers.command);
+        let zoom_reset = ctx.input(|i| i.key_pressed(egui::Key::Num0)   && i.modifiers.command);
+        if zoom_in || zoom_out || zoom_reset {
+            let new_scale = if zoom_reset {
+                1.0_f32
+            } else if zoom_in {
+                ((self.ui_scale + 0.05) * 20.0).round() / 20.0
+            } else {
+                ((self.ui_scale - 0.05) * 20.0).round() / 20.0
+            }.clamp(1.0, 2.0);
+            self.ui_scale = new_scale;
+            ctx.set_zoom_factor(new_scale);
+            AppConfig {
+                selected_font: zoom_selected_font,
+                tab_mode: self.tab_mode,
+                font_size: zoom_font_size,
+                ui_scale: new_scale,
+                copy_mode: zoom_copy_mode,
+            }.save();
+        }
+
+        // ── Apply theme + UI scale ──
         crate::ui::theme::apply_theme(ctx, &tab.state.current_theme());
+        ctx.set_zoom_factor(self.ui_scale);
 
         // ── Window title ──
         let title = {
@@ -685,6 +731,10 @@ impl eframe::App for ColominApp {
         let mut debug_toggle: Option<bool> = None;
         let mut reveal_log: bool = false;
         let mut open_log: bool = false;
+        let mut font_size_change: Option<f32> = None;
+        let mut ui_scale_change: Option<f32> = None;
+        let mut reset_all = false;
+        let mut copy_mode_change: Option<crate::state::CopyMode> = None;
         Self::show_status_bar_for(
             tab,
             &self.available_fonts,
@@ -696,6 +746,11 @@ impl eframe::App for ColominApp {
             &mut debug_toggle,
             &mut reveal_log,
             &mut open_log,
+            &mut font_size_change,
+            self.ui_scale,
+            &mut ui_scale_change,
+            &mut reset_all,
+            &mut copy_mode_change,
             ctx,
         );
 
@@ -706,6 +761,9 @@ impl eframe::App for ColominApp {
             AppConfig {
                 selected_font: choice,
                 tab_mode: self.tab_mode,
+                font_size: tab.state.font_size,
+                ui_scale: self.ui_scale,
+                copy_mode: tab.state.copy_mode,
             }.save();
         }
 
@@ -718,6 +776,9 @@ impl eframe::App for ColominApp {
             let config = AppConfig {
                 selected_font: self.tabs[self.active_tab].state.selected_font.clone(),
                 tab_mode: new_mode,
+                font_size: self.tabs[self.active_tab].state.font_size,
+                ui_scale: self.ui_scale,
+                copy_mode: self.tabs[self.active_tab].state.copy_mode,
             };
             config.save();
         }
@@ -744,6 +805,61 @@ impl eframe::App for ColominApp {
             if let Some(path) = crate::debug_log::current_log_path() {
                 let _ = std::process::Command::new("open").arg(&path).spawn();
             }
+        }
+
+        if let Some(new_size) = font_size_change {
+            let tab = &mut self.tabs[self.active_tab];
+            tab.state.font_size = new_size;
+            AppConfig {
+                selected_font: tab.state.selected_font.clone(),
+                tab_mode: self.tab_mode,
+                font_size: new_size,
+                ui_scale: self.ui_scale,
+                copy_mode: tab.state.copy_mode,
+            }.save();
+        }
+
+        if let Some(new_scale) = ui_scale_change {
+            self.ui_scale = new_scale;
+            ctx.set_zoom_factor(new_scale);
+            let tab = &self.tabs[self.active_tab];
+            AppConfig {
+                selected_font: tab.state.selected_font.clone(),
+                tab_mode: self.tab_mode,
+                font_size: tab.state.font_size,
+                ui_scale: new_scale,
+                copy_mode: tab.state.copy_mode,
+            }.save();
+        }
+
+        if let Some(mode) = copy_mode_change {
+            let tab = &mut self.tabs[self.active_tab];
+            tab.state.copy_mode = mode;
+            AppConfig {
+                selected_font: tab.state.selected_font.clone(),
+                tab_mode: self.tab_mode,
+                font_size: tab.state.font_size,
+                ui_scale: self.ui_scale,
+                copy_mode: mode,
+            }.save();
+        }
+
+        if reset_all {
+            let defaults = AppConfig::default();
+            self.ui_scale = defaults.ui_scale;
+            self.tab_mode = defaults.tab_mode;
+            ctx.set_zoom_factor(defaults.ui_scale);
+            Self::apply_font(ctx, None, &self.available_fonts);
+            let tab = &mut self.tabs[self.active_tab];
+            tab.state.selected_font = None;
+            tab.state.font_size = defaults.font_size;
+            tab.state.copy_mode = defaults.copy_mode;
+            tab.state.header_row_enabled = true;
+            tab.state.row_highlight_on_hover = true;
+            tab.state.set_theme_index(0);
+            tab.state.clear_cache();
+            tab.state.invalidate_row_layout();
+            defaults.save();
         }
 
         // ── Main table ──
@@ -890,6 +1006,11 @@ impl ColominApp {
         debug_toggle: &mut Option<bool>,
         reveal_log: &mut bool,
         open_log: &mut bool,
+        font_size_change: &mut Option<f32>,
+        ui_scale: f32,
+        ui_scale_change: &mut Option<f32>,
+        reset_all: &mut bool,
+        copy_mode_change: &mut Option<crate::state::CopyMode>,
         ctx: &egui::Context,
     ) {
         use crate::ui::stats as st;
@@ -923,26 +1044,39 @@ impl ColominApp {
         let theme_name        = tab.state.theme_name();
         let current_theme_idx = tab.state.theme_index;
         let header_on         = tab.state.header_row_enabled;
+        let row_hover_on      = tab.state.row_highlight_on_hover;
         let themes            = crate::ui::theme::bundled_themes();
         let theme_submenu     = tab.state.settings_theme_submenu;
         let font_submenu      = tab.state.settings_font_submenu;
         let debug_submenu     = tab.state.settings_debug_submenu;
+        let copy_mode_submenu = tab.state.settings_copy_mode_submenu;
+        let settings_open     = tab.state.settings_menu;
         let selected_font     = tab.state.selected_font.clone();
+        let font_size         = tab.state.font_size;
+        let copy_mode         = tab.state.copy_mode;
 
         let mut toggle_header    = false;
-        let mut new_theme_idx:   Option<usize>                       = None;
-        let mut new_pref_stat:   Option<crate::state::PreferredStat> = None;
-        let mut new_theme_sub:   Option<bool>                        = None;
-        let mut new_font_sub:    Option<bool>                        = None;
-        let mut new_debug_sub:   Option<bool>                        = None;
-        let mut toggle_tab_mode: Option<bool>                        = None;
-        let mut new_debug_toggle: Option<bool>                       = None;
-        let mut new_reveal_log:  bool                                = false;
-        let mut new_open_log:    bool                                = false;
+        let mut toggle_row_hover = false;
+        let mut new_theme_idx:     Option<usize>                         = None;
+        let mut new_pref_stat:     Option<crate::state::PreferredStat>   = None;
+        let mut new_theme_sub:     Option<bool>                          = None;
+        let mut new_font_sub:      Option<bool>                          = None;
+        let mut new_debug_sub:     Option<bool>                          = None;
+        let mut new_copy_mode_sub: Option<bool>                          = None;
+        let mut new_copy_mode:     Option<crate::state::CopyMode>        = None;
+        let mut new_settings_open: Option<bool>                          = None;
+        let mut toggle_tab_mode:   Option<bool>                          = None;
+        let mut new_debug_toggle:  Option<bool>                          = None;
+        let mut new_reveal_log:    bool                                  = false;
+        let mut new_open_log:      bool                                  = false;
+        let mut new_font_size:     Option<f32>                           = None;
+        let mut new_reset_all:     bool                                  = false;
 
         egui::TopBottomPanel::bottom("status_bar")
             .frame(egui::Frame::NONE.fill(fill).inner_margin(egui::Margin::symmetric(8, 4)))
             .show(ctx, |ui| {
+                ui.style_mut().override_font_id = Some(egui::FontId::monospace(11.0));
+                ui.style_mut().interaction.selectable_labels = false;
                 ui.horizontal(|ui| {
                     let bar_rect = ui.max_rect();
 
@@ -987,14 +1121,20 @@ impl ColominApp {
 
                             if let Some(s) = current_stats {
                                 let badge_id = egui::Id::new("stats_picker_popup");
-                                let badge_btn = ui.small_button(label);
+                                let stat_icon = crate::ui::icons::icon(
+                                    crate::ui::icons::stat_icon_name(pref), text_sec,
+                                ).fit_to_exact_size(egui::vec2(11.0, 11.0));
+                                let badge_btn = ui.add(
+                                    egui::Button::image_and_text(stat_icon, label.as_str()).small(),
+                                );
                                 if badge_btn.clicked() {
-                                    if ui.memory(|m| m.is_popup_open(badge_id)) {
-                                        ui.memory_mut(|m| m.close_popup());
+                                    if egui::Popup::is_id_open(ui.ctx(), badge_id) {
+                                        egui::Popup::close_id(ui.ctx(), badge_id);
                                     } else {
-                                        ui.memory_mut(|m| m.open_popup(badge_id));
+                                        egui::Popup::open_id(ui.ctx(), badge_id);
                                     }
                                 }
+                                #[allow(deprecated)]
                                 egui::popup_above_or_below_widget(
                                     ui, badge_id, &badge_btn,
                                     egui::AboveOrBelow::Above,
@@ -1006,14 +1146,24 @@ impl ColominApp {
                                             let is_active = pref == stat;
                                             let icon_color = if is_active { colors.accent } else { text_sec };
                                             let text_color = if is_active { colors.accent } else { text_pri };
-                                            ui.horizontal(|ui| {
-                                                ui.add(crate::ui::icons::icon(crate::ui::icons::stat_icon_name(stat), icon_color));
-                                                let lbl = egui::RichText::new(format!("{}   {}", stat.label(), sv)).size(12.0).color(text_color);
-                                                if ui.selectable_label(is_active, lbl).clicked() {
-                                                    new_pref_stat = Some(stat);
-                                                    ui.memory_mut(|m| m.close_popup());
-                                                }
-                                            });
+                                            let sv_color = if is_active { colors.accent } else { text_sec };
+                                            let lbl = egui::RichText::new(stat.label()).size(12.0).color(text_color);
+                                            if Self::menu_row(
+                                                ui,
+                                                crate::ui::icons::stat_icon_name(stat),
+                                                icon_color,
+                                                lbl,
+                                                is_active,
+                                                colors.accent,
+                                                |ui| {
+                                                    ui.add(egui::Label::new(
+                                                        egui::RichText::new(&sv).size(11.0).color(sv_color)
+                                                    ).selectable(false));
+                                                },
+                                            ).clicked() {
+                                                new_pref_stat = Some(stat);
+                                                egui::Popup::close_id(ui.ctx(), badge_id);
+                                            }
                                         }
                                     },
                                 );
@@ -1030,14 +1180,15 @@ impl ColominApp {
                             let gear = crate::ui::icons::icon("gear", text_sec);
                             ui.add(egui::Button::image(gear).small())
                         };
+
                         if settings_btn.clicked() {
-                            if ui.memory(|m| m.is_popup_open(settings_id)) {
-                                ui.memory_mut(|m| m.close_popup());
+                            if settings_open {
+                                new_settings_open = Some(false);
                                 new_theme_sub = Some(false);
                                 new_font_sub = Some(false);
                                 new_debug_sub = Some(false);
                             } else {
-                                ui.memory_mut(|m| m.open_popup(settings_id));
+                                new_settings_open = Some(true);
                             }
                         }
                         // Custom popover anchored at the gear's right edge with an
@@ -1045,7 +1196,7 @@ impl ColominApp {
                         // can set our own pivot/offset; the convenience
                         // popup_above_or_below_widget pins LEFT_BOTTOM and clamps to
                         // the screen, leaving the popup flush against the right edge.)
-                        if ui.memory(|m| m.is_popup_open(settings_id)) {
+                        if settings_open {
                             // Anchor the popup's right edge to the gear's right edge,
                             // so it inherits whatever margin the gear has from the window.
                             let anchor = settings_btn.rect.right_top();
@@ -1251,6 +1402,30 @@ impl ColominApp {
                                             },
                                         ).clicked() { new_theme_idx = Some(i); }
                                     }
+                                } else if copy_mode_submenu {
+                                    // Copy Mode submenu
+                                    if Self::menu_row(
+                                        ui, "chevron-left", text_sec,
+                                        egui::RichText::new("Back").size(12.0).color(text_sec),
+                                        false, colors.accent,
+                                        |_ui| {},
+                                    ).clicked() { new_copy_mode_sub = Some(false); }
+                                    ui.separator();
+                                    for &mode in crate::state::CopyMode::ALL.iter() {
+                                        let is_active = mode == copy_mode;
+                                        let tc = if is_active { colors.accent } else { text_pri };
+                                        let ic = if is_active { colors.accent } else { text_sec };
+                                        if Self::menu_row(
+                                            ui, mode.icon_name(), ic,
+                                            egui::RichText::new(mode.label()).size(12.0).color(tc),
+                                            is_active, colors.accent,
+                                            |ui| {
+                                                if is_active {
+                                                    ui.add(egui::Label::new(egui::RichText::new("Active").size(11.0).color(colors.accent)).selectable(false));
+                                                }
+                                            },
+                                        ).clicked() { new_copy_mode = Some(mode); }
+                                    }
                                 } else {
                                     // Root settings
                                     if Self::menu_row(
@@ -1268,6 +1443,83 @@ impl ColominApp {
                                         |ui| { ui.add(crate::ui::icons::icon("chevron-right", text_sec)); },
                                     ).clicked() { new_font_sub = Some(true); }
 
+                                    // Font size stepper row
+                                    {
+                                        let row_h = 26.0;
+                                        let avail_w = ui.available_width();
+                                        let (row_rect, _) = ui.allocate_exact_size(egui::vec2(avail_w, row_h), egui::Sense::hover());
+                                        let inner = row_rect.shrink2(egui::vec2(8.0, 0.0));
+                                        ui.scope_builder(
+                                            egui::UiBuilder::new()
+                                                .max_rect(inner)
+                                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                                            |ui| {
+                                                ui.add(crate::ui::icons::icon("font", colors.accent));
+                                                ui.add_space(8.0);
+                                                ui.add(egui::Label::new(egui::RichText::new("Font Size").size(12.0).color(text_pri)).selectable(false));
+                                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                    if ui.add(egui::Button::new(egui::RichText::new("+").size(12.0).color(text_pri)).small().frame(false)).clicked() {
+                                                        if font_size < 18.0 { new_font_size = Some(font_size + 1.0); }
+                                                    }
+                                                    ui.add(egui::Label::new(egui::RichText::new(format!("{}", font_size as u32)).size(11.0).color(text_sec)).selectable(false));
+                                                    if ui.add(egui::Button::new(egui::RichText::new("−").size(12.0).color(text_pri)).small().frame(false)).clicked() {
+                                                        if font_size > 10.0 { new_font_size = Some(font_size - 1.0); }
+                                                    }
+                                                });
+                                            },
+                                        );
+                                    }
+
+                                    // Zoom stepper row — mirrors Font Size row.
+                                    // [−] steps by 5%; [+] steps by 5%.
+                                    // Middle field is a DragValue: drag or click-to-type.
+                                    // Drag is deferred (commits on release) so the popup
+                                    // doesn't shift mid-interaction.
+                                    {
+                                        let row_h = 26.0;
+                                        let avail_w = ui.available_width();
+                                        let (row_rect, _) = ui.allocate_exact_size(egui::vec2(avail_w, row_h), egui::Sense::hover());
+                                        let inner = row_rect.shrink2(egui::vec2(8.0, 0.0));
+                                        ui.scope_builder(
+                                            egui::UiBuilder::new()
+                                                .max_rect(inner)
+                                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                                            |ui| {
+                                                ui.add(crate::ui::icons::icon("zoom", colors.accent));
+                                                ui.add_space(8.0);
+                                                ui.add(egui::Label::new(egui::RichText::new("Zoom").size(12.0).color(text_pri)).selectable(false));
+                                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                    if ui.add(egui::Button::new(egui::RichText::new("+").size(12.0).color(text_pri)).small().frame(false)).clicked() {
+                                                        let next = (ui_scale + 0.05).min(2.0);
+                                                        *ui_scale_change = Some((next * 20.0).round() / 20.0);
+                                                    }
+                                                    let dv_id = egui::Id::new("zoom_dv");
+                                                    let pending: Option<f32> = ui.memory(|m| m.data.get_temp(dv_id));
+                                                    let mut pct = (pending.unwrap_or(ui_scale) * 100.0).round();
+                                                    let resp = ui.add(
+                                                        egui::DragValue::new(&mut pct)
+                                                            .range(100.0_f32..=200.0_f32)
+                                                            .speed(1.0)
+                                                            .suffix("%")
+                                                            .fixed_decimals(0),
+                                                    );
+                                                    if resp.dragged() {
+                                                        ui.memory_mut(|m| m.data.insert_temp(dv_id, pct / 100.0));
+                                                    } else if resp.drag_stopped() {
+                                                        *ui_scale_change = Some((pct / 100.0).clamp(1.0, 2.0));
+                                                        ui.memory_mut(|m| m.data.remove::<f32>(dv_id));
+                                                    } else if resp.changed() {
+                                                        *ui_scale_change = Some((pct / 100.0).clamp(1.0, 2.0));
+                                                    }
+                                                    if ui.add(egui::Button::new(egui::RichText::new("−").size(12.0).color(text_pri)).small().frame(false)).clicked() {
+                                                        let next = (ui_scale - 0.05).max(1.0);
+                                                        *ui_scale_change = Some((next * 20.0).round() / 20.0);
+                                                    }
+                                                });
+                                            },
+                                        );
+                                    }
+
                                     ui.separator();
 
                                     // Header row toggle
@@ -1283,6 +1535,19 @@ impl ColominApp {
                                         },
                                     ).clicked() { toggle_header = true; }
 
+                                    // Row hover highlight toggle
+                                    let rh_ic = if row_hover_on { colors.accent } else { text_sec };
+                                    if Self::menu_row(
+                                        ui, "row-hover", rh_ic,
+                                        egui::RichText::new("Row Highlight").size(12.0).color(text_pri),
+                                        row_hover_on, colors.accent,
+                                        |ui| {
+                                            let s = if row_hover_on { "On" } else { "Off" };
+                                            let c = if row_hover_on { colors.accent } else { text_sec };
+                                            ui.add(egui::Label::new(egui::RichText::new(s).size(11.0).color(c)).selectable(false));
+                                        },
+                                    ).clicked() { toggle_row_hover = true; }
+
                                     // Tab mode toggle
                                     let tab_ic = if tab_mode { colors.accent } else { text_sec };
                                     if Self::menu_row(
@@ -1295,6 +1560,14 @@ impl ColominApp {
                                             ui.add(egui::Label::new(egui::RichText::new(s).size(11.0).color(c)).selectable(false));
                                         },
                                     ).clicked() { toggle_tab_mode = Some(!tab_mode); }
+
+                                    // Copy Mode submenu link
+                                    if Self::menu_row(
+                                        ui, "copy-mode", colors.accent,
+                                        egui::RichText::new(format!("Copy: {}", copy_mode.label())).size(12.0).color(text_pri),
+                                        false, colors.accent,
+                                        |ui| { ui.add(crate::ui::icons::icon("chevron-right", text_sec)); },
+                                    ).clicked() { new_copy_mode_sub = Some(true); }
 
                                     ui.separator();
 
@@ -1312,6 +1585,16 @@ impl ColominApp {
                                             ui.add_space(4.0);
                                         },
                                     ).clicked() { new_debug_sub = Some(true); }
+
+                                    ui.separator();
+
+                                    // Reset all settings to defaults
+                                    if Self::menu_row(
+                                        ui, "undo", text_sec,
+                                        egui::RichText::new("Reset All Settings").size(12.0).color(text_sec),
+                                        false, colors.accent,
+                                        |_ui| {},
+                                    ).clicked() { new_reset_all = true; }
                                 }
                                         });
                                     });
@@ -1322,10 +1605,11 @@ impl ColominApp {
                                     if !area_resp.response.rect.contains(p)
                                         && !settings_btn.rect.contains(p)
                                     {
-                                        ui.memory_mut(|m| m.close_popup());
+                                        new_settings_open = Some(false);
                                         new_theme_sub = Some(false);
                                         new_font_sub = Some(false);
                                         new_debug_sub = Some(false);
+                                        new_copy_mode_sub = Some(false);
                                     }
                                 }
                             }
@@ -1335,12 +1619,24 @@ impl ColominApp {
             });
 
         // Apply mutations.
+        if toggle_row_hover {
+            tab.state.row_highlight_on_hover = !tab.state.row_highlight_on_hover;
+        }
         if toggle_header {
             tab.state.header_row_enabled = !tab.state.header_row_enabled;
             tab.state.clear_cache();
             tab.state.invalidate_row_layout();
             tab.state.computed_stats = None;
             tab.state.stats_key.clear();
+        }
+        if let Some(open) = new_settings_open {
+            tab.state.settings_menu = open;
+            if !open {
+                tab.state.settings_theme_submenu = false;
+                tab.state.settings_font_submenu = false;
+                tab.state.settings_debug_submenu = false;
+                tab.state.settings_copy_mode_submenu = false;
+            }
         }
         if let Some(idx) = new_theme_idx  { tab.state.set_theme_index(idx); }
         if let Some(s)   = new_pref_stat  { tab.state.preferred_stat = s; }
@@ -1349,6 +1645,7 @@ impl ColominApp {
             if sub {
                 tab.state.settings_font_submenu = false;
                 tab.state.settings_debug_submenu = false;
+                tab.state.settings_copy_mode_submenu = false;
             }
         }
         if let Some(sub) = new_font_sub {
@@ -1356,6 +1653,7 @@ impl ColominApp {
             if sub {
                 tab.state.settings_theme_submenu = false;
                 tab.state.settings_debug_submenu = false;
+                tab.state.settings_copy_mode_submenu = false;
             }
         }
         if let Some(sub) = new_debug_sub {
@@ -1363,6 +1661,15 @@ impl ColominApp {
             if sub {
                 tab.state.settings_theme_submenu = false;
                 tab.state.settings_font_submenu = false;
+                tab.state.settings_copy_mode_submenu = false;
+            }
+        }
+        if let Some(sub) = new_copy_mode_sub {
+            tab.state.settings_copy_mode_submenu = sub;
+            if sub {
+                tab.state.settings_theme_submenu = false;
+                tab.state.settings_font_submenu = false;
+                tab.state.settings_debug_submenu = false;
             }
         }
         if let Some(new_mode) = toggle_tab_mode {
@@ -1376,6 +1683,15 @@ impl ColominApp {
         }
         if new_open_log {
             *open_log = true;
+        }
+        if let Some(s) = new_font_size {
+            *font_size_change = Some(s);
+        }
+        if let Some(mode) = new_copy_mode {
+            *copy_mode_change = Some(mode);
+        }
+        if new_reset_all {
+            *reset_all = true;
         }
     }
 

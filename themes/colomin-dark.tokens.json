@@ -11,7 +11,7 @@
       "$description": "Elevated surface background (panels, cards, table cells)"
     },
     "border": {
-      "$value": { "colorSpace": "srgb", "components": [0.169, 0.169, 0.169], "hex": "#2B2B2B" },
+      "$value": { "colorSpace": "srgb", "components": [0.22, 0.22, 0.22], "hex": "#383838" },
       "$description": "Default border and separator color"
     },
     "text": {

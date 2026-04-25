@@ -65,6 +65,13 @@ pub fn source(name: &str) -> egui::ImageSource<'static> {
         "debug"                => entry!("bytes://debug.svg",                "debug.svg"),
         "font"                 => entry!("bytes://font.svg",                 "font.svg"),
         "tabs"                 => entry!("bytes://tabs.svg",                 "tabs.svg"),
+        "row-hover"            => entry!("bytes://row-hover.svg",            "row-hover.svg"),
+        "zoom"                 => entry!("bytes://zoom.svg",                 "zoom.svg"),
+        "copy-mode"            => entry!("bytes://copy-mode.svg",            "copy-mode.svg"),
+        "copy-text"            => entry!("bytes://copy-text.svg",            "copy-text.svg"),
+        "copy-csv"             => entry!("bytes://copy-csv.svg",             "copy-csv.svg"),
+        "copy-json"            => entry!("bytes://copy-json.svg",            "copy-json.svg"),
+        "copy-markdown"        => entry!("bytes://copy-markdown.svg",        "copy-markdown.svg"),
         _                      => ("bytes://empty.svg", &[]),
     };
     pair.into()

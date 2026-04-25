@@ -11,12 +11,29 @@ pub struct TableView {
     row_resize: Option<usize>,
     row_resize_start_y: f32,
     row_resize_start_h: f32,
+    /// Index of data column whose right edge is being dragged for resize.
+    col_resize: Option<usize>,
+    col_resize_start_w: f32,
+    /// Header bottom Y from the previous frame — used to offset the vertical scrollbar.
+    header_bottom_y_last: f32,
     /// Column being renamed via double-click on header (col_index, buffer).
     renaming_col: Option<(usize, String)>,
     /// Bounding rect of all visible selected cells — accumulated each frame for the dashed border.
     sel_rect: Option<egui::Rect>,
     /// Marching-ants dash phase offset, advanced each frame while a selection is active.
     dash_offset: f32,
+    // Custom vertical scrollbar state (pinned to window right edge).
+    v_scroll_y: f32,
+    v_content_h: f32,
+    v_viewport_h: f32,
+    v_drag: Option<(f32, f32)>,
+    v_alpha: f32,
+    // Custom horizontal scrollbar state (pinned to window bottom edge).
+    h_scroll_x: f32,
+    h_content_w: f32,
+    h_viewport_w: f32,
+    h_drag: Option<(f32, f32)>,
+    h_alpha: f32,
 }
 
 /// Paint a 1px horizontal line at the bottom edge of `rect` using the cell's painter.
@@ -102,6 +119,123 @@ fn excel_col_label(mut index: usize) -> String {
     s.chars().rev().collect()
 }
 
+fn col_name_for_display(state: &AppState, display_col: usize) -> String {
+    let Some(f) = state.file.as_ref() else { return excel_col_label(display_col) };
+    if state.header_row_enabled {
+        match f.resolve_col(display_col) {
+            crate::state::ColSource::Inserted(i) =>
+                f.inserted_columns.get(i).cloned().unwrap_or_default(),
+            crate::state::ColSource::Original(i) =>
+                f.metadata.columns.iter()
+                    .find(|c| c.index == i)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_else(|| format!("Col {}", display_col + 1)),
+        }
+    } else {
+        excel_col_label(display_col)
+    }
+}
+
+fn selection_rows_and_cols(state: &AppState) -> Option<(Vec<usize>, Vec<usize>)> {
+    use crate::state::SelectionType;
+    match state.selection_type {
+        Some(SelectionType::Cell) => {
+            let (min_r, max_r, min_c, max_c) = state.selection_range()?;
+            Some(((min_r..=max_r).collect(), (min_c..=max_c).collect()))
+        }
+        Some(SelectionType::Row) => {
+            if state.selected_rows.is_empty() { return None; }
+            let mut rows = state.selected_rows.clone();
+            rows.sort_unstable();
+            Some((rows, (0..state.col_count()).collect()))
+        }
+        Some(SelectionType::Column) => {
+            if state.selected_columns.is_empty() { return None; }
+            // Skip display row 0 when header is OFF — it is the synthetic letter-header row
+            let start = if !state.header_row_enabled && state.file.is_some() { 1 } else { 0 };
+            let mut cols = state.selected_columns.clone();
+            cols.sort_unstable();
+            Some(((start..state.display_row_count()).collect(), cols))
+        }
+        None => None,
+    }
+}
+
+fn csv_escape(val: &str) -> String {
+    if val.contains(',') || val.contains('"') || val.contains('\n') || val.contains('\r') {
+        format!("\"{}\"", val.replace('"', "\"\""))
+    } else {
+        val.to_string()
+    }
+}
+
+fn json_str(val: &str) -> String {
+    let escaped = val
+        .replace('\\', "\\\\")
+        .replace('"',  "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t");
+    format!("\"{}\"", escaped)
+}
+
+fn format_selection(state: &mut AppState, mode: crate::state::CopyMode) -> String {
+    use crate::state::CopyMode;
+    let Some((rows, cols)) = selection_rows_and_cols(state) else { return String::new() };
+    let headers: Vec<String> = cols.iter().map(|&c| col_name_for_display(state, c)).collect();
+
+    match mode {
+        CopyMode::Text => rows.iter().map(|&r|
+            cols.iter()
+                .map(|&c| get_cell(state, r, c))
+                .collect::<Vec<_>>()
+                .join("\t")
+        ).collect::<Vec<_>>().join("\n"),
+
+        CopyMode::Csv => {
+            let mut out = vec![
+                headers.iter().map(|h| csv_escape(h)).collect::<Vec<_>>().join(","),
+            ];
+            for &r in &rows {
+                out.push(
+                    cols.iter()
+                        .map(|&c| csv_escape(&get_cell(state, r, c)))
+                        .collect::<Vec<_>>()
+                        .join(","),
+                );
+            }
+            out.join("\n")
+        }
+
+        CopyMode::Json => {
+            let mut objs: Vec<String> = Vec::with_capacity(rows.len());
+            for &r in &rows {
+                let pairs: Vec<String> = cols.iter().zip(headers.iter()).map(|(&c, h)| {
+                    let v = get_cell(state, r, c);
+                    format!("{}:{}", json_str(h), json_str(&v))
+                }).collect();
+                objs.push(format!("{{{}}}", pairs.join(",")));
+            }
+            format!("[{}]", objs.join(","))
+        }
+
+        CopyMode::Markdown => {
+            let sep: Vec<String> = headers.iter().map(|_| "---".to_string()).collect();
+            let mut lines = vec![
+                format!("| {} |", headers.iter().map(|h| h.replace('|', "\\|")).collect::<Vec<_>>().join(" | ")),
+                format!("| {} |", sep.join(" | ")),
+            ];
+            for &r in &rows {
+                let cells: Vec<String> = cols.iter()
+                    .map(|&c| get_cell(state, r, c).replace('|', "\\|"))
+                    .collect();
+                lines.push(format!("| {} |", cells.join(" | ")));
+            }
+            lines.join("\n")
+        }
+    }
+}
+
 impl TableView {
     pub fn new() -> Self {
         Self {
@@ -109,9 +243,22 @@ impl TableView {
             row_resize: None,
             row_resize_start_y: 0.0,
             row_resize_start_h: 0.0,
+            col_resize: None,
+            col_resize_start_w: 0.0,
+            header_bottom_y_last: 0.0,
             renaming_col: None,
             sel_rect: None,
             dash_offset: 0.0,
+            v_scroll_y: 0.0,
+            v_content_h: 0.0,
+            v_viewport_h: 0.0,
+            v_drag: None,
+            v_alpha: 0.0,
+            h_scroll_x: 0.0,
+            h_content_w: 0.0,
+            h_viewport_w: 0.0,
+            h_drag: None,
+            h_alpha: 0.0,
         }
     }
 
@@ -122,6 +269,74 @@ impl TableView {
         self.sel_rect = None;
 
         self.handle_keyboard(state, ctx);
+
+        // ── Custom scrollbar geometry (vertical pinned to right, horizontal pinned to bottom) ──
+        let panel_rect = ui.max_rect();
+        let scroll_spc = ui.spacing().scroll;
+        let scroll_w = scroll_spc.bar_width + scroll_spc.bar_inner_margin + scroll_spc.bar_outer_margin;
+        let scroll_h = scroll_w; // use same thickness for both axes
+        // Table fills the entire panel — scrollbars are overlaid on top (macOS style).
+        let table_rect = panel_rect;
+        // Interaction zones for the overlay scrollbars (right strip and bottom strip).
+        // The vertical bar starts below the sticky header so the thumb never overlaps it.
+        let v_bar_top = if self.header_bottom_y_last > 0.0 {
+            self.header_bottom_y_last
+        } else {
+            panel_rect.min.y
+        };
+        let bar_rect = egui::Rect::from_min_max(
+            egui::pos2(panel_rect.max.x - scroll_w, v_bar_top),
+            egui::pos2(panel_rect.max.x, panel_rect.max.y - scroll_h),
+        );
+        let h_bar_rect = egui::Rect::from_min_max(
+            egui::pos2(panel_rect.min.x, panel_rect.max.y - scroll_h),
+            egui::pos2(panel_rect.max.x - scroll_w, panel_rect.max.y),
+        );
+        let v_content_h = self.v_content_h;
+        let v_viewport_h = self.v_viewport_h;
+        let max_scroll = (v_content_h - v_viewport_h).max(0.0);
+        let track_h = bar_rect.height();
+        let thumb_h = if v_content_h > 0.0 {
+            (v_viewport_h / v_content_h * track_h).max(24.0).min(track_h)
+        } else { track_h };
+
+        // Apply vertical drag that started in a previous frame.
+        let mut drag_scroll_y: Option<f32> = None;
+        if let Some((start_cursor_y, start_scroll_y)) = self.v_drag {
+            if ui.ctx().input(|i| i.pointer.button_down(egui::PointerButton::Primary)) {
+                if let Some(pos) = ui.ctx().pointer_latest_pos() {
+                    let track_scroll_h = (track_h - thumb_h).max(1.0);
+                    let new_y = (start_scroll_y + (pos.y - start_cursor_y) / track_scroll_h * max_scroll)
+                        .clamp(0.0, max_scroll);
+                    drag_scroll_y = Some(new_y);
+                }
+            } else {
+                self.v_drag = None;
+            }
+        }
+
+        // Horizontal drag state.
+        let h_content_w = self.h_content_w;
+        let h_viewport_w = self.h_viewport_w;
+        let h_max_scroll = (h_content_w - h_viewport_w).max(0.0);
+        let h_track_w = h_bar_rect.width();
+        let h_thumb_w = if h_content_w > 0.0 {
+            (h_viewport_w / h_content_w * h_track_w).max(24.0).min(h_track_w)
+        } else { h_track_w };
+
+        let mut h_drag_scroll_x: Option<f32> = None;
+        if let Some((start_cursor_x, start_scroll_x)) = self.h_drag {
+            if ui.ctx().input(|i| i.pointer.button_down(egui::PointerButton::Primary)) {
+                if let Some(pos) = ui.ctx().pointer_latest_pos() {
+                    let track_scroll_w = (h_track_w - h_thumb_w).max(1.0);
+                    let new_x = (start_scroll_x + (pos.x - start_cursor_x) / track_scroll_w * h_max_scroll)
+                        .clamp(0.0, h_max_scroll);
+                    h_drag_scroll_x = Some(new_x);
+                }
+            } else {
+                self.h_drag = None;
+            }
+        }
 
         let colors = state.current_theme();
         let row_count = state.display_row_count();
@@ -136,22 +351,25 @@ impl TableView {
         let sel_color  = colors.accent_subtle;
         let edit_color = colors.edited;
         let surf       = colors.surface;
-        let accent     = colors.accent;
-        let border     = colors.border;
-        // Header/body separator: 40% of text_secondary over surface — visible
-        // in every theme without being heavy (border color is too close to surface).
-        let header_sep = blend(text_sec, surf, 0.4);
+        let accent          = colors.accent;
+        let border          = colors.border;
+        let hover_row_color = colors.hover_row;
+        let header_sep = border;
 
         let header_enabled = state.header_row_enabled;
         let col_names: Vec<String> = if let Some(f) = state.file.as_ref() {
             let n = f.current_col_count();
             (0..n).map(|display_col| {
                 if header_enabled {
-                    let phys = state.display_to_physical_col(display_col);
-                    f.metadata.columns.iter()
-                        .find(|c| c.index == phys)
-                        .map(|c| c.name.clone())
-                        .unwrap_or_else(|| format!("Col {}", display_col + 1))
+                    match f.resolve_col(display_col) {
+                        crate::state::ColSource::Inserted(ins_idx) =>
+                            f.inserted_columns.get(ins_idx).cloned().unwrap_or_default(),
+                        crate::state::ColSource::Original(orig_idx) =>
+                            f.metadata.columns.iter()
+                                .find(|c| c.index == orig_idx)
+                                .map(|c| c.name.clone())
+                                .unwrap_or_else(|| format!("Col {}", display_col + 1)),
+                    }
                 } else {
                     excel_col_label(display_col)
                 }
@@ -176,6 +394,12 @@ impl TableView {
         let header_bottom_y = std::cell::Cell::new(0.0_f32);
         let header_left_x   = std::cell::Cell::new(f32::MAX);
         let header_right_x  = std::cell::Cell::new(0.0_f32);
+        // Header column rects captured during header rendering for the overlay repaint.
+        let header_col_rects: std::cell::Cell<Vec<(egui::Rect, usize)>> = std::cell::Cell::new(Vec::new());
+        // Which column's resize handle is hovered this frame (for overlay painting).
+        let col_resize_hovered: std::cell::Cell<Option<usize>> = std::cell::Cell::new(None);
+        // Which row's resize handle is hovered this frame (propagated gutter→data cells).
+        let row_resize_hovered: std::cell::Cell<Option<usize>> = std::cell::Cell::new(None);
         // Selection rect accumulated during body rendering; drawn after .body().
         let sel_rect_acc    = std::cell::Cell::<Option<egui::Rect>>::new(None);
         let current_dash    = self.dash_offset;
@@ -189,31 +413,57 @@ impl TableView {
             _ => false,
         };
 
-        egui::ScrollArea::horizontal()
+        // Cells to capture scroll state from inside the body closure.
+        let scroll_y_out    = std::cell::Cell::new(self.v_scroll_y);
+        let content_h_out   = std::cell::Cell::new(self.v_content_h);
+        let viewport_h_out  = std::cell::Cell::new(self.v_viewport_h);
+
+        // Precompute cell-selection range for border highlights (gutter right, header bottom).
+        let cell_sel_range = if state.selection_type == Some(SelectionType::Cell) {
+            state.selection_range()
+        } else {
+            None
+        };
+
+        // Table renders in a rect that excludes the custom scrollbar column.
+        let mut table_ui = ui.new_child(egui::UiBuilder::new().max_rect(table_rect));
+
+        let mut h_sa = egui::ScrollArea::horizontal()
             .auto_shrink([false, false])
-            .show(ui, |ui| {
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
+        if let Some(dx) = h_drag_scroll_x {
+            h_sa = h_sa.scroll_offset(egui::vec2(dx, 0.0));
+        }
+        let h_scroll_out = h_sa.show(&mut table_ui, |ui| {
                 ui.set_min_width(total_width);
                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
 
-                // Suppress idle vertical column separators drawn by egui_extras.
-                // Hovered/dragged strokes remain so the resize affordance is still visible.
+                // Suppress all vertical column separators — resize is handled manually
+                // via header-only handles (like row resize).
                 ui.visuals_mut().widgets.noninteractive.bg_stroke = egui::Stroke::NONE;
+                ui.visuals_mut().widgets.hovered.bg_stroke = egui::Stroke::NONE;
+                ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::NONE;
 
                 let mut table = TableBuilder::new(ui)
                     .striped(false)
-                    .resizable(true)
+                    .resizable(false)
                     .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                     .column(Column::exact(gutter_width))
-                    .min_scrolled_height(0.0);
+                    .min_scrolled_height(0.0)
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
 
                 for col in 0..col_count {
                     let w = state.column_width(col);
-                    table = table.column(Column::initial(w).at_least(40.0).resizable(true));
+                    table = table.column(Column::initial(w).at_least(40.0).resizable(false));
+                }
+
+                if let Some(dy) = drag_scroll_y {
+                    table = table.vertical_scroll_offset(dy);
                 }
 
                 // ── Header ──
-                table
-            .header(28.0, |mut header| {
+                let body_out = table
+            .header(30.0, |mut header| {
                 header.col(|ui| {
                     let rect = ui.max_rect();
                     ui.painter().rect_filled(rect, 0.0, header_bg);
@@ -223,6 +473,8 @@ impl TableView {
                 for (col_idx, name) in col_names.iter().enumerate() {
                     header.col(|ui| {
                         let rect = ui.max_rect();
+                        // Capture rect for the header overlay repaint.
+                        { let mut v = header_col_rects.take(); v.push((rect, col_idx)); header_col_rects.set(v); }
                         // Highlight header when the column is selected.
                         let col_selected = state.selection_type == Some(SelectionType::Column)
                             && state.selected_columns.contains(&col_idx);
@@ -241,7 +493,7 @@ impl TableView {
                             ui.spacing_mut().item_spacing = egui::vec2(4.0, 2.0);
                             let buf = &mut self.renaming_col.as_mut().unwrap().1;
                             let te = egui::TextEdit::singleline(buf)
-                                .font(egui::FontId::proportional(12.0))
+                                .font(egui::FontId::proportional(state.font_size))
                                 .desired_width(rect.width() - 8.0);
                             let resp = ui.add(te);
                             if !resp.has_focus() {
@@ -262,15 +514,20 @@ impl TableView {
                             let phys_col = state.display_to_physical_col(col_idx);
                             let is_sorted_here = sort_col == Some(phys_col);
                             let color = if is_sorted_here { accent } else { text_sec };
-                            // Allocate interaction FIRST with stable ID, then paint on top.
+                            // Reserve the right 5px for the resize handle so it gets
+                            // exclusive hover/drag priority (no rect overlap).
                             let hdr_id = egui::Id::new(("hdr", col_idx as u64));
-                            let resp = ui.interact(rect, hdr_id, egui::Sense::click());
+                            let click_rect = egui::Rect::from_min_max(
+                                rect.min,
+                                egui::pos2(rect.max.x - 5.0, rect.max.y),
+                            );
+                            let resp = ui.interact(click_rect, hdr_id, egui::Sense::click());
 
                             // Text label — leave room for sort icon on the right.
                             let label_max_x = if is_sorted_here { rect.right() - 20.0 } else { rect.right() - 4.0 };
                             let galley = ui.painter().layout_no_wrap(
                                 name.clone(),
-                                egui::FontId::proportional(12.0),
+                                egui::FontId::proportional(state.font_size),
                                 color,
                             );
                             let text_pos = egui::pos2(rect.left() + 6.0, rect.center().y - galley.size().y * 0.5);
@@ -320,11 +577,11 @@ impl TableView {
                                 let tc = colors.text_primary;
                                 if icon_menu_item(ui, "insert-column-left", "Insert Column Left", ic, tc, false).clicked() {
                                     insert_col(state, col_idx);
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 if icon_menu_item(ui, "insert-column-right", "Insert Column Right", ic, tc, false).clicked() {
                                     insert_col(state, col_idx + 1);
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 ui.separator();
                                 let is_asc = sort_asc == Some(true) && is_sorted_here;
@@ -333,26 +590,26 @@ impl TableView {
                                     is_sorted_here && is_asc).clicked()
                                 {
                                     state.pending_sort = Some((phys_col, true));
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 if icon_menu_item(ui, "sort-desc", "Sort Descending",
                                     if is_sorted_here && !is_asc { accent } else { ic }, tc,
                                     is_sorted_here && !is_asc).clicked()
                                 {
                                     state.pending_sort = Some((phys_col, false));
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 ui.separator();
                                 if col_idx > 0 {
                                     if icon_menu_item(ui, "chevron-left", "Move Left", ic, tc, false).clicked() {
                                         move_column(state, col_idx, col_idx - 1);
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                 }
                                 if col_idx + 1 < col_count {
                                     if icon_menu_item(ui, "chevron-right", "Move Right", ic, tc, false).clicked() {
                                         move_column(state, col_idx, col_idx + 1);
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                 }
                                 if header_enabled {
@@ -362,16 +619,45 @@ impl TableView {
                                             commit_edit(state, er, ec, ev);
                                         }
                                         self.renaming_col = Some((col_idx, name.clone()));
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                 }
                                 ui.separator();
                                 let danger = colors.danger;
                                 if icon_menu_item(ui, "delete-column", "Delete Column", danger, danger, false).clicked() {
                                     delete_col(state, col_idx);
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                             });
+                        }
+
+                        // ── Column resize handle (right 5px, no overlap with click_rect) ──
+                        let handle_rect = egui::Rect::from_min_max(
+                            egui::pos2(rect.max.x - 5.0, rect.min.y),
+                            rect.max,
+                        );
+                        let ch_id = egui::Id::new(("col_resize_handle", col_idx as u64));
+                        let handle_resp = ui.interact(handle_rect, ch_id, egui::Sense::drag());
+                        let handle_active = handle_resp.hovered()
+                            || handle_resp.dragged()
+                            || self.col_resize == Some(col_idx);
+                        if handle_active {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                            col_resize_hovered.set(Some(col_idx));
+                        }
+                        if handle_resp.drag_started() {
+                            self.col_resize = Some(col_idx);
+                            self.col_resize_start_w = state.column_width(col_idx);
+                        }
+                        if handle_resp.dragged() && self.col_resize == Some(col_idx) {
+                            let dx = handle_resp.drag_delta().x;
+                            let new_w = (self.col_resize_start_w + dx).max(40.0);
+                            self.col_resize_start_w = new_w;
+                            state.column_widths.insert(col_idx, new_w);
+                            state.invalidate_col_layout();
+                        }
+                        if handle_resp.drag_stopped() {
+                            self.col_resize = None;
                         }
                     });
                 }
@@ -389,22 +675,51 @@ impl TableView {
                     let row_sel = state.selection_type == Some(SelectionType::Row)
                         && state.selected_rows.contains(&display_row);
 
+                    // Per-row hover state shared across all cells in this row.
+                    let row_hovered = std::cell::Cell::new(false);
+
                     // ── Gutter cell ──
                     row.col(|ui| {
+                        // Reset per-row resize-hover state at the start of each gutter cell.
+                        row_resize_hovered.set(None);
                         let rect = ui.max_rect();
-                        let bg = if row_sel { sel_color } else { gutter_bg };
+                        // Detect hover by pointer Y falling within the row's Y band.
+                        if state.row_highlight_on_hover && !row_sel {
+                            let is_hov = ui.input(|i| {
+                                i.pointer.hover_pos().map(|p| rect.y_range().contains(p.y)).unwrap_or(false)
+                            });
+                            row_hovered.set(is_hov);
+                        }
+                        let bg = if row_sel { sel_color }
+                                 else if row_hovered.get() { hover_row_color }
+                                 else { gutter_bg };
                         ui.painter().rect_filled(rect, 0.0, bg);
+
+                        // Right border separating gutter from data columns.
+                        // Highlight in accent when this row is within the cell selection range.
+                        let right_border_color = cell_sel_range
+                            .map(|(min_r, max_r, _, _)| display_row >= min_r && display_row <= max_r)
+                            .map(|in_range| if in_range { accent } else { border })
+                            .unwrap_or(border);
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_max(
+                                egui::pos2(rect.max.x - 1.0, rect.min.y),
+                                rect.max,
+                            ),
+                            0.0,
+                            right_border_color,
+                        );
 
                         // Row number
                         let num_rect = egui::Rect::from_min_max(
                             rect.min,
-                            egui::pos2(rect.max.x, rect.max.y - 4.0),
+                            egui::pos2(rect.max.x - 1.0, rect.max.y - 4.0),
                         );
                         ui.painter().text(
                             num_rect.center(),
                             egui::Align2::CENTER_CENTER,
                             (display_row + 1).to_string(),
-                            egui::FontId::monospace(10.0),
+                            egui::FontId::monospace((state.font_size - 2.0).max(8.0)),
                             line_num,
                         );
 
@@ -426,6 +741,10 @@ impl TableView {
                             }
                         }
                         // Right-click context menu on row gutter.
+                        // Use actual_row (row_order index) so operations are correct even
+                        // when header_row_enabled=false adds a synthetic header at display_row 0.
+                        let actual_row_for_ctx = state.display_row_to_actual_row(display_row)
+                            .unwrap_or(display_row);
                         let total_rows_ctx = row_count;
                         resp.context_menu(|ui| {
                             ui.set_min_width(130.0);
@@ -433,31 +752,31 @@ impl TableView {
                             let ic = colors.text_secondary;
                             let tc = colors.text_primary;
                             if icon_menu_item(ui, "insert-row-above", "Insert Row Above", ic, tc, false).clicked() {
-                                insert_row(state, display_row);
-                                ui.close_menu();
+                                insert_row(state, actual_row_for_ctx);
+                                ui.close();
                             }
                             if icon_menu_item(ui, "insert-row-below", "Insert Row Below", ic, tc, false).clicked() {
-                                insert_row(state, display_row + 1);
-                                ui.close_menu();
+                                insert_row(state, actual_row_for_ctx + 1);
+                                ui.close();
                             }
                             ui.separator();
-                            if display_row > 0 {
+                            if actual_row_for_ctx > 0 {
                                 if icon_menu_item(ui, "chevron-up", "Move Up", ic, tc, false).clicked() {
-                                    move_row(state, display_row, display_row - 1);
-                                    ui.close_menu();
+                                    move_row(state, actual_row_for_ctx, actual_row_for_ctx - 1);
+                                    ui.close();
                                 }
                             }
                             if display_row + 1 < total_rows_ctx {
                                 if icon_menu_item(ui, "chevron-down", "Move Down", ic, tc, false).clicked() {
-                                    move_row(state, display_row, display_row + 1);
-                                    ui.close_menu();
+                                    move_row(state, actual_row_for_ctx, actual_row_for_ctx + 1);
+                                    ui.close();
                                 }
                             }
                             ui.separator();
                             let danger = colors.danger;
                             if icon_menu_item(ui, "delete-row", "Delete Row", danger, danger, false).clicked() {
-                                delete_row(state, display_row);
-                                ui.close_menu();
+                                delete_row(state, actual_row_for_ctx);
+                                ui.close();
                             }
                         });
 
@@ -467,17 +786,19 @@ impl TableView {
                             rect.max,
                         );
                         let handle_resp = ui.allocate_rect(handle_rect, egui::Sense::drag());
-                        if handle_resp.hovered() || self.row_resize == Some(display_row) {
+                        let row_h_active = handle_resp.hovered() || self.row_resize == Some(display_row);
+                        if row_h_active {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
-                            ui.painter().rect_filled(handle_rect, 0.0, accent);
-                        } else {
-                            // Draw only a 1px line at the very bottom instead of the full 4px block
-                            let line_rect = egui::Rect::from_min_max(
-                                egui::pos2(handle_rect.min.x, handle_rect.max.y - 1.0),
-                                handle_rect.max,
-                            );
-                            ui.painter().rect_filled(line_rect, 0.0, border);
+                            row_resize_hovered.set(Some(display_row));
                         }
+                        // Always draw 1px bottom line (accent when active, border otherwise) —
+                        // consistent with the column resize handle's visual weight.
+                        let bottom_line_color = if row_h_active { accent } else { border };
+                        let line_rect = egui::Rect::from_min_max(
+                            egui::pos2(handle_rect.min.x, handle_rect.max.y - 1.0),
+                            handle_rect.max,
+                        );
+                        ui.painter().rect_filled(line_rect, 0.0, bottom_line_color);
                         if handle_resp.drag_started() {
                             self.row_resize = Some(display_row);
                             self.row_resize_start_y = handle_resp.interact_pointer_pos()
@@ -515,6 +836,7 @@ impl TableView {
                                 .unwrap_or(false);
 
                             let bg = if cell_sel || row_sel { sel_color }
+                                     else if row_hovered.get() { hover_row_color }
                                      else if has_edit { edit_color }
                                      else { surf };
 
@@ -522,7 +844,8 @@ impl TableView {
                                 // In-place editing: same background and border as a normal cell.
                                 let edit_rect = ui.max_rect();
                                 ui.painter().rect_filled(edit_rect, 0.0, bg);
-                                paint_bottom_border(ui, edit_rect, border);
+                                let bottom_color = if row_resize_hovered.get() == Some(display_row) { accent } else { border };
+                                paint_bottom_border(ui, edit_rect, bottom_color);
                                 // Restore spacing so the TextEdit renders at normal height.
                                 ui.spacing_mut().item_spacing = egui::vec2(4.0, 2.0);
                                 let desired_w = ui.available_width() - 4.0;
@@ -532,7 +855,7 @@ impl TableView {
                                 let edit_id = egui::Id::new(("edit", display_row as u64, col_idx as u64));
                                 let te = egui::TextEdit::singleline(buf)
                                     .id(edit_id)
-                                    .font(egui::FontId::proportional(12.0))
+                                    .font(egui::FontId::proportional(state.font_size))
                                     .desired_width(desired_w)
                                     .frame(false)
                                     .margin(egui::Margin::symmetric(4, 0));
@@ -587,14 +910,15 @@ impl TableView {
 
                                 // Paint after interaction registration.
                                 ui.painter().rect_filled(resp.rect, 0.0, bg);
-                                paint_bottom_border(ui, resp.rect, border);
+                                let bottom_color = if row_resize_hovered.get() == Some(display_row) { accent } else { border };
+                                paint_bottom_border(ui, resp.rect, bottom_color);
                                 let _ = is_cursor;
                                 let value = get_cell(state, display_row, col_idx);
                                 ui.painter().text(
                                     egui::pos2(resp.rect.left() + 4.0, resp.rect.center().y),
                                     egui::Align2::LEFT_CENTER,
                                     &value,
-                                    egui::FontId::proportional(12.0),
+                                    egui::FontId::proportional(state.font_size),
                                     text_pri,
                                 );
 
@@ -668,52 +992,118 @@ impl TableView {
                                     let tc = colors.text_primary;
                                     if icon_menu_item(ui, "copy", "Copy", ic, tc, false).clicked() {
                                         ui.ctx().copy_text(value.clone());
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                     if icon_menu_item(ui, "edit", "Clear Cell", ic, tc, false).clicked() {
                                         commit_edit(state, display_row, col_idx, String::new());
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                     ui.separator();
                                     if icon_menu_item(ui, "sort-asc", "Sort Ascending", ic, tc, false).clicked() {
                                         state.pending_sort = Some((col_idx, true));
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                     if icon_menu_item(ui, "sort-desc", "Sort Descending", ic, tc, false).clicked() {
                                         state.pending_sort = Some((col_idx, false));
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                     ui.separator();
                                     if icon_menu_item(ui, "chevron-up", "Reset Row Height", ic, tc, false).clicked() {
                                         state.row_heights.remove(&display_row);
                                         state.invalidate_row_layout();
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                 });
                             }
                         });
                     }
                 });
-            }); // closes .body()
+            }); // closes .body() — body_out captured above
 
-                // Paint the header border in Order::Middle so it renders on top
-                // of body cells but below context menus and tooltips.
+                // Capture scroll state for the custom scrollbar.
+                scroll_y_out.set(body_out.state.offset.y);
+                content_h_out.set(body_out.content_size.y);
+                viewport_h_out.set(body_out.inner_rect.height());
+
+                // Repaint the full header as a Foreground overlay so body rows
+                // scrolling into the header area are always covered.
                 let y = header_bottom_y.get();
                 let l = header_left_x.get();
                 let r = header_right_x.get();
                 if y > 0.0 && r > l {
-                    let layer = egui::LayerId::new(egui::Order::Middle, egui::Id::new("header_sep"));
-                    let body_clip = ui.clip_rect();
-                    let sb = ui.spacing().scroll.bar_width + ui.spacing().scroll.bar_outer_margin + 2.0;
-                    let clip = egui::Rect::from_min_max(
-                        body_clip.min,
-                        egui::pos2(body_clip.max.x - sb, body_clip.max.y - sb),
+                    let layer = egui::LayerId::new(egui::Order::Middle, egui::Id::new("header_overlay"));
+                    let clip = ui.clip_rect();
+                    // Clip strictly to the header strip so this layer can never
+                    // cover context menus or popups that appear below the header.
+                    let header_clip = egui::Rect::from_min_max(
+                        egui::pos2(l, clip.min.y),
+                        egui::pos2(r, y),
                     );
-                    ui.ctx().layer_painter(layer).with_clip_rect(clip).rect_filled(
-                        egui::Rect::from_min_max(egui::pos2(l, y - 4.0), egui::pos2(r, y - 3.0)),
+                    let painter = ui.ctx().layer_painter(layer).with_clip_rect(header_clip);
+
+                    // Fill the gutter and any gap left of the first column with header_bg.
+                    painter.rect_filled(
+                        egui::Rect::from_min_max(egui::pos2(l, clip.min.y), egui::pos2(r, y)),
+                        0.0,
+                        header_bg,
+                    );
+
+                    // Repaint each column's background and name on top.
+                    let col_rects = header_col_rects.take();
+                    for (rect, col_idx) in &col_rects {
+                        let col_selected = state.selection_type == Some(SelectionType::Column)
+                            && state.selected_columns.contains(col_idx);
+                        painter.rect_filled(*rect, 0.0, if col_selected { sel_color } else { header_bg });
+                        if let Some(name) = col_names.get(*col_idx) {
+                            if !name.is_empty() {
+                                painter.text(
+                                    egui::pos2(rect.left() + 8.0, rect.center().y),
+                                    egui::Align2::LEFT_CENTER,
+                                    name,
+                                    egui::FontId::proportional(state.font_size - 1.0),
+                                    text_sec,
+                                );
+                            }
+                        }
+                    }
+
+                    // Right-edge resize border on each column header.
+                    // Idle: 1px border color. Hovered/active: 1px accent.
+                    let hovered_col = col_resize_hovered.get();
+                    for (rect, col_idx) in &col_rects {
+                        let line_color = if hovered_col == Some(*col_idx) { accent } else { border };
+                        painter.rect_filled(
+                            egui::Rect::from_min_max(
+                                egui::pos2(rect.max.x - 1.0, rect.min.y),
+                                rect.max,
+                            ),
+                            0.0,
+                            line_color,
+                        );
+                    }
+
+                    // Separator line at the very bottom edge of the header.
+                    painter.rect_filled(
+                        egui::Rect::from_min_max(egui::pos2(l, y - 1.0), egui::pos2(r, y)),
                         0.0,
                         header_sep,
                     );
+
+                    // Bottom accent border on column headers within the cell selection range.
+                    if let Some((_, _, min_c, max_c)) = cell_sel_range {
+                        for (rect, col_idx) in &col_rects {
+                            if *col_idx >= min_c && *col_idx <= max_c {
+                                painter.rect_filled(
+                                    egui::Rect::from_min_max(
+                                        egui::pos2(rect.min.x, y - 1.0),
+                                        egui::pos2(rect.max.x, y),
+                                    ),
+                                    0.0,
+                                    accent,
+                                );
+                            }
+                        }
+                    }
                 }
 
                 // Marching-ants selection border drawn on Order::Middle so it
@@ -724,14 +1114,10 @@ impl TableView {
                             egui::Order::Middle,
                             egui::Id::new("sel_dashed"),
                         );
-                        // Clip to the table body region so the border can never
-                        // bleed over the sticky header above, the status bar
-                        // below, or the scrollbars at the edges.
                         let body_clip = ui.clip_rect();
-                        let sb = ui.spacing().scroll.bar_width + ui.spacing().scroll.bar_outer_margin + 2.0;
                         let clip = egui::Rect::from_min_max(
                             egui::pos2(body_clip.min.x, header_bottom_y.get()),
-                            egui::pos2(body_clip.max.x - sb, body_clip.max.y - sb),
+                            body_clip.max,
                         );
                         let painter = ui.ctx().layer_painter(layer).with_clip_rect(clip);
                         if is_single_cell {
@@ -753,7 +1139,151 @@ impl TableView {
                     }
                 }
 
-        }); // closes ScrollArea::horizontal().show()
+        }); // closes h_sa.show() — ScrollArea::horizontal
+
+        // ── Update scroll state ──
+        // Persist header bottom Y so the vertical scrollbar can avoid overlapping it.
+        if header_bottom_y.get() > 0.0 {
+            self.header_bottom_y_last = header_bottom_y.get();
+        }
+        let prev_v = self.v_scroll_y;
+        let prev_h = self.h_scroll_x;
+        self.v_scroll_y   = scroll_y_out.get();
+        self.v_content_h  = content_h_out.get();
+        self.v_viewport_h = viewport_h_out.get();
+        self.h_scroll_x   = h_scroll_out.state.offset.x;
+        self.h_content_w  = h_scroll_out.content_size.x;
+        self.h_viewport_w = h_scroll_out.inner_rect.width();
+
+        // ── Scrollbar fade (macOS-style overlay) ──
+        let dt = ctx.input(|i| i.unstable_dt).min(0.1);
+        const FADE_IN: f32  = 8.0;   // alpha/s when appearing
+        const FADE_OUT: f32 = 1.5;   // alpha/s when disappearing
+        const LINGER: f32   = 0.6;   // extra seconds after scroll stops
+
+        // Detect scroll or mouse-over-the-table to trigger fade-in.
+        let mouse_in_table = ctx.input(|i| i.pointer.hover_pos())
+            .map(|p| panel_rect.contains(p))
+            .unwrap_or(false);
+        let scrolled_v = (self.v_scroll_y - prev_v).abs() > 0.1;
+        let scrolled_h = (self.h_scroll_x - prev_h).abs() > 0.1;
+
+        // ── Vertical scrollbar interaction ──
+        let bar_id = egui::Id::new("table_v_scrollbar");
+        let bar_resp = ui.interact(bar_rect, bar_id, egui::Sense::click_and_drag());
+
+        if bar_resp.drag_started() && self.v_drag.is_none() {
+            if let Some(pos) = bar_resp.interact_pointer_pos() {
+                self.v_drag = Some((pos.y, self.v_scroll_y));
+            }
+        }
+        if bar_resp.clicked() && self.v_drag.is_none() && max_scroll > 0.0 {
+            if let Some(pos) = bar_resp.interact_pointer_pos() {
+                let ratio = ((pos.y - bar_rect.min.y - thumb_h / 2.0) / (track_h - thumb_h).max(1.0))
+                    .clamp(0.0, 1.0);
+                self.v_scroll_y = ratio * max_scroll;
+            }
+        }
+
+        // ── Horizontal scrollbar interaction ──
+        let h_bar_id = egui::Id::new("table_h_scrollbar");
+        let h_bar_resp = ui.interact(h_bar_rect, h_bar_id, egui::Sense::click_and_drag());
+        if h_bar_resp.drag_started() && self.h_drag.is_none() {
+            if let Some(pos) = h_bar_resp.interact_pointer_pos() {
+                self.h_drag = Some((pos.x, self.h_scroll_x));
+            }
+        }
+        if h_bar_resp.clicked() && self.h_drag.is_none() && h_max_scroll > 0.0 {
+            if let Some(pos) = h_bar_resp.interact_pointer_pos() {
+                let ratio = ((pos.x - h_bar_rect.min.x - h_thumb_w / 2.0)
+                    / (h_track_w - h_thumb_w).max(1.0))
+                    .clamp(0.0, 1.0);
+                self.h_scroll_x = ratio * h_max_scroll;
+            }
+        }
+
+        // Update alpha: fade in when active, fade out when idle.
+        let v_active = scrolled_v || bar_resp.hovered() || bar_resp.dragged() || self.v_drag.is_some();
+        let h_active = scrolled_h || h_bar_resp.hovered() || h_bar_resp.dragged() || self.h_drag.is_some();
+        // Mouse over the table area keeps the relevant bar faintly visible while moving.
+        let v_idle_show = mouse_in_table && max_scroll > 0.0;
+        let h_idle_show = mouse_in_table && h_max_scroll > 0.0;
+
+        if v_active {
+            self.v_alpha = (self.v_alpha + dt * FADE_IN).min(1.0);
+        } else if v_idle_show {
+            // Drift toward a reduced opacity, not zero, while mouse is anywhere in the table.
+            let target = 0.35;
+            if self.v_alpha > target {
+                self.v_alpha = (self.v_alpha - dt * FADE_OUT).max(target);
+            } else {
+                self.v_alpha = (self.v_alpha + dt * FADE_IN).min(target);
+            }
+        } else {
+            self.v_alpha = (self.v_alpha - dt / LINGER).max(0.0);
+        }
+
+        if h_active {
+            self.h_alpha = (self.h_alpha + dt * FADE_IN).min(1.0);
+        } else if h_idle_show {
+            let target = 0.35;
+            if self.h_alpha > target {
+                self.h_alpha = (self.h_alpha - dt * FADE_OUT).max(target);
+            } else {
+                self.h_alpha = (self.h_alpha + dt * FADE_IN).min(target);
+            }
+        } else {
+            self.h_alpha = (self.h_alpha - dt / LINGER).max(0.0);
+        }
+
+        // Request repaint while fading so the animation is smooth.
+        if self.v_alpha > 0.0 || self.h_alpha > 0.0 {
+            ctx.request_repaint();
+        }
+
+        // Helper: apply alpha to a color (multiplies the alpha channel).
+        let with_alpha = |c: egui::Color32, a: f32| -> egui::Color32 {
+            egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (a * 255.0) as u8)
+        };
+
+        // ── Draw vertical scrollbar ──
+        let painter = ui.painter();
+        // Only fill the track background when the bar is at least somewhat visible.
+        if self.v_alpha > 0.01 && max_scroll > 0.0 {
+            let display_y  = drag_scroll_y.unwrap_or(self.v_scroll_y);
+            let thumb_top  = (display_y / max_scroll * (track_h - thumb_h)).max(0.0);
+            let thumb_rect = egui::Rect::from_min_max(
+                egui::pos2(bar_rect.min.x + 3.0, bar_rect.min.y + thumb_top + 2.0),
+                egui::pos2(bar_rect.max.x - 3.0, bar_rect.min.y + thumb_top + thumb_h - 2.0),
+            );
+            let base_color = if bar_resp.dragged() || bar_resp.is_pointer_button_down_on() {
+                colors.text_secondary
+            } else if bar_resp.hovered() {
+                blend(colors.text_secondary, colors.text_tertiary, 0.5)
+            } else {
+                colors.text_tertiary
+            };
+            painter.rect_filled(thumb_rect, 4.0, with_alpha(base_color, self.v_alpha));
+        }
+
+        // ── Draw horizontal scrollbar ──
+        if self.h_alpha > 0.01 && h_max_scroll > 0.0 {
+            let display_x = h_drag_scroll_x.unwrap_or(self.h_scroll_x);
+            let thumb_left = (display_x / h_max_scroll * (h_track_w - h_thumb_w)).max(0.0);
+            let h_thumb_rect = egui::Rect::from_min_max(
+                egui::pos2(h_bar_rect.min.x + thumb_left + 2.0, h_bar_rect.min.y + 3.0),
+                egui::pos2(h_bar_rect.min.x + thumb_left + h_thumb_w - 2.0, h_bar_rect.max.y - 3.0),
+            );
+            let h_base_color = if h_bar_resp.dragged() || h_bar_resp.is_pointer_button_down_on() {
+                colors.text_secondary
+            } else if h_bar_resp.hovered() {
+                blend(colors.text_secondary, colors.text_tertiary, 0.5)
+            } else {
+                colors.text_tertiary
+            };
+            painter.rect_filled(h_thumb_rect, 4.0, with_alpha(h_base_color, self.h_alpha));
+        }
+
 
         // Sync sel_rect and advance the dash animation for the next frame.
         self.sel_rect = sel_rect_acc.get();
@@ -763,11 +1293,12 @@ impl TableView {
             ctx.request_repaint();
         }
 
-        // Copy shortcut
+        // Copy shortcut — detect Event::Copy because egui-winit intercepts Cmd+C and emits
+        // Event::Copy instead of Event::Key { Key::C }, so key_pressed(Key::C) never fires.
         if self.editing.is_none() {
-            let do_copy = ctx.input(|i| i.key_pressed(egui::Key::C) && i.modifiers.command);
+            let do_copy = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)));
             if do_copy {
-                ctx.copy_text(selection_to_text(state));
+                ctx.copy_text(format_selection(state, state.copy_mode));
             }
         }
     }
@@ -1186,16 +1717,42 @@ fn get_cell(state: &mut AppState, display_row: usize, col: usize) -> String {
 }
 
 fn load_row(state: &mut AppState, display_row: usize) -> bool {
-    let (path, byte_offset, actual_row, col_count, delimiter, row_edits) = {
+    let actual_row = match state.display_row_to_actual_row(display_row) { Some(r) => r, None => return false };
+
+    // Resolve the row source via row_order (respects inserts/deletes/moves).
+    // Returns None for inserted rows (handled inline), Some(orig_row) for original CSV rows.
+    enum RowResolution { Inserted(Vec<String>), Original(usize) }
+    let resolution: RowResolution = {
         let file = match state.file.as_ref() { Some(f) => f, None => return false };
-        let actual_row = match state.display_row_to_actual_row(display_row) { Some(r) => r, None => return false };
-        let phys_row = file.virtual_to_actual_row(actual_row);
-        let byte_offset = match file.row_offsets.get(phys_row).copied() { Some(o) => o, None => return false };
+        if let Some(ref order) = file.row_order {
+            match order.get(actual_row) {
+                Some(&crate::state::RowSource::Inserted(ins_idx)) =>
+                    RowResolution::Inserted(file.inserted_rows.get(ins_idx).cloned().unwrap_or_default()),
+                Some(&crate::state::RowSource::Original(orig_row)) =>
+                    RowResolution::Original(orig_row),
+                None => return false,
+            }
+        } else {
+            // No row_order: fall back to sort/filter permutation.
+            RowResolution::Original(file.virtual_to_actual_row(actual_row))
+        }
+    };
+
+    if let RowResolution::Inserted(data) = resolution {
+        state.cache_row(actual_row, data);
+        return true;
+    }
+    let orig_row = match resolution { RowResolution::Original(r) => r, _ => unreachable!() };
+
+    let (path, byte_offset, col_count, delimiter, row_edits) = {
+        let file = match state.file.as_ref() { Some(f) => f, None => return false };
+        // Use orig_row (from row_order) to seek to the correct CSV offset.
+        let byte_offset = match file.row_offsets.get(orig_row).copied() { Some(o) => o, None => return false };
         let row_edits: Vec<(usize, String)> = file.edits.iter()
             .filter(|(&(r, _), _)| r == actual_row)
             .map(|(&(_, c), v)| (c, v.clone()))
             .collect();
-        (file.file_path.clone(), byte_offset, actual_row, file.metadata.columns.len(), file.delimiter, row_edits)
+        (file.file_path.clone(), byte_offset, file.metadata.columns.len(), file.delimiter, row_edits)
     };
 
     let fh = match std::fs::File::open(&path) { Ok(f) => f, Err(_) => return false };
@@ -1211,19 +1768,6 @@ fn load_row(state: &mut AppState, display_row: usize) -> bool {
     true
 }
 
-fn selection_to_text(state: &AppState) -> String {
-    let Some((min_r, max_r, min_c, max_c)) = state.selection_range() else { return String::new() };
-    (min_r..=max_r)
-        .map(|r| {
-            (min_c..=max_c)
-                .map(|c| state.get_display_cell(r, c).unwrap_or_default())
-                .collect::<Vec<_>>()
-                .join("\t")
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 // ── Insert row / column ───────────────────────────────────────────────────────
 
 /// Insert a blank row at display position `at` (rows at `at` and beyond shift down).
@@ -1237,6 +1781,7 @@ fn insert_row(state: &mut AppState, at: usize) {
     if let Some(ref mut order) = file.row_order {
         order.insert(at, crate::state::RowSource::Inserted(ins_idx));
     }
+    state.row_cache.clear();
     state.cache_version += 1;
     state.invalidate_row_layout();
     state.undo_stack.push(crate::state::EditAction::Structural {
@@ -1250,7 +1795,7 @@ fn insert_col(state: &mut AppState, at: usize) {
     let Some(ref mut file) = state.file else { return };
     file.ensure_col_order();
     let ins_idx = file.inserted_columns.len();
-    file.inserted_columns.push(format!("Column {}", ins_idx + 1));
+    file.inserted_columns.push(String::new());
     let at = at.min(file.col_order.as_ref().map(|o| o.len()).unwrap_or(0));
     if let Some(ref mut order) = file.col_order {
         order.insert(at, crate::state::ColSource::Inserted(ins_idx));
@@ -1259,7 +1804,7 @@ fn insert_col(state: &mut AppState, at: usize) {
     let new_col_idx = file.metadata.columns.len();
     file.metadata.columns.push(crate::csv_engine::types::CsvColumn {
         index: new_col_idx,
-        name: format!("Column {}", ins_idx + 1),
+        name: String::new(),
         inferred_type: crate::csv_engine::types::ColumnType::String,
     });
     state.row_cache.clear();
