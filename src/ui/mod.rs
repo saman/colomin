@@ -1,3 +1,4 @@
+pub mod icons;
+pub mod stats;
 pub mod table;
-pub mod status_bar;
 pub mod theme;

@@ -1,0 +1,87 @@
+{
+  "$description": "Colomin Dark — the default dark theme for Colomin CSV editor.",
+  "color": {
+    "$type": "color",
+    "background": {
+      "$value": { "colorSpace": "srgb", "components": [0.078, 0.078, 0.078], "hex": "#141414" },
+      "$description": "Primary application background"
+    },
+    "surface": {
+      "$value": { "colorSpace": "srgb", "components": [0.106, 0.106, 0.106], "hex": "#1B1B1B" },
+      "$description": "Elevated surface background (panels, cards, table cells)"
+    },
+    "border": {
+      "$value": { "colorSpace": "srgb", "components": [0.22, 0.22, 0.22], "hex": "#383838" },
+      "$description": "Default border and separator color"
+    },
+    "text": {
+      "primary": {
+        "$value": { "colorSpace": "srgb", "components": [0.91, 0.91, 0.91], "hex": "#E8E8E8" },
+        "$description": "Primary text color for content and headings"
+      },
+      "secondary": {
+        "$value": { "colorSpace": "srgb", "components": [0.631, 0.631, 0.631], "hex": "#A1A1A1" },
+        "$description": "Secondary text for labels, captions, and muted content"
+      },
+      "tertiary": {
+        "$value": { "colorSpace": "srgb", "components": [0.431, 0.431, 0.431], "hex": "#6E6E6E" },
+        "$description": "Tertiary text for placeholders and disabled content"
+      }
+    },
+    "accent": {
+      "default": {
+        "$value": { "colorSpace": "srgb", "components": [0.376, 0.647, 0.98], "hex": "#60A5FA" },
+        "$description": "Primary accent color for interactive elements and focus indicators"
+      },
+      "hover": {
+        "$value": { "colorSpace": "srgb", "components": [0.231, 0.51, 0.965], "hex": "#3B82F6" },
+        "$description": "Accent color on hover state"
+      },
+      "on-accent": {
+        "$value": { "colorSpace": "srgb", "components": [0.031, 0.067, 0.122], "hex": "#08111F" },
+        "$description": "Text color used on accent-colored backgrounds"
+      },
+      "subtle": {
+        "$value": { "colorSpace": "srgb", "components": [0.09, 0.145, 0.329], "hex": "#172554" },
+        "$description": "Subtle accent tint for selected items and active states"
+      }
+    },
+    "state": {
+      "edited": {
+        "$value": { "colorSpace": "srgb", "components": [0.227, 0.141, 0.063], "hex": "#3A2410" },
+        "$description": "Background tint indicating an edited/modified cell"
+      },
+      "hover-row": {
+        "$value": { "colorSpace": "srgb", "components": [0.118, 0.161, 0.231], "hex": "#1E293B" },
+        "$description": "Background highlight for hovered table rows"
+      },
+      "danger": {
+        "$value": { "colorSpace": "srgb", "components": [0.937, 0.267, 0.267], "hex": "#EF4444" },
+        "$description": "Destructive action color for errors, deletions, and warnings"
+      },
+      "selection": {
+        "$value": { "colorSpace": "srgb", "components": [0.09, 0.2, 0.361], "hex": "#17335C" },
+        "$description": "Background color for selected cells and text selection"
+      }
+    },
+    "chrome": {
+      "status-bar": {
+        "$value": { "colorSpace": "srgb", "components": [0.078, 0.078, 0.078], "hex": "#141414" },
+        "$description": "Status bar background color"
+      },
+      "gutter": {
+        "$value": { "colorSpace": "srgb", "components": [0.106, 0.106, 0.106], "hex": "#1B1B1B" },
+        "$description": "Row number gutter background"
+      },
+      "line-number": {
+        "$value": { "colorSpace": "srgb", "components": [0.431, 0.431, 0.431], "hex": "#6E6E6E" },
+        "$description": "Row number text color"
+      }
+    }
+  },
+  "$extensions": {
+    "dev.colomin": {
+      "appearance": "dark"
+    }
+  }
+}

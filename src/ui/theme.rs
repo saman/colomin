@@ -1,39 +1,39 @@
 #![allow(dead_code)]
 
-use gpui::{rgb, Hsla};
+use egui::Color32;
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::path::Path;
 
-/// The resolved colors used throughout the app
+/// The resolved colors used throughout the app.
 #[derive(Debug, Clone)]
 pub struct ThemeColors {
-    pub bg: Hsla,
-    pub surface: Hsla,
-    pub border: Hsla,
-    pub text_primary: Hsla,
-    pub text_secondary: Hsla,
-    pub text_tertiary: Hsla,
-    pub accent: Hsla,
-    pub accent_hover: Hsla,
-    pub accent_text: Hsla,
-    pub accent_subtle: Hsla,
-    pub edited: Hsla,
-    pub hover_row: Hsla,
-    pub danger: Hsla,
-    pub status_bar_bg: Hsla,
-    pub gutter_bg: Hsla,
-    pub line_number: Hsla,
-    pub selection: Hsla,
+    pub bg: Color32,
+    pub surface: Color32,
+    pub border: Color32,
+    pub text_primary: Color32,
+    pub text_secondary: Color32,
+    pub text_tertiary: Color32,
+    pub accent: Color32,
+    pub accent_hover: Color32,
+    pub accent_text: Color32,
+    pub accent_subtle: Color32,
+    pub edited: Color32,
+    pub hover_row: Color32,
+    pub danger: Color32,
+    pub status_bar_bg: Color32,
+    pub gutter_bg: Color32,
+    pub line_number: Color32,
+    pub selection: Color32,
 }
 
-/// A loaded Zed theme with a name and resolved colors
+/// A loaded theme with a name and resolved colors.
 #[derive(Debug, Clone)]
-pub struct ZedTheme {
+pub struct Theme {
     pub name: String,
     pub appearance: ThemeAppearance,
     pub colors: ThemeColors,
 }
+
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ThemeAppearance {
@@ -41,280 +41,281 @@ pub enum ThemeAppearance {
     Dark,
 }
 
-// ── Zed theme JSON schema ──
+// ── DTCG Design Token format (W3C Design Tokens Community Group) ──
 
-#[derive(Deserialize)]
-struct ZedThemeFile {
-    name: Option<String>,
-    themes: Vec<ZedThemeEntry>,
+/// A DTCG color token value.
+/// Supports the full object form: { colorSpace, components, alpha?, hex? }
+#[derive(Deserialize, Debug)]
+#[serde(untagged)]
+enum DtcgColorValue {
+    /// Full object form per the DTCG spec.
+    Object {
+        #[serde(rename = "colorSpace")]
+        color_space: Option<String>,
+        components: Vec<f64>,
+        alpha: Option<f64>,
+        hex: Option<String>,
+    },
+    /// Legacy shorthand: plain hex string (e.g. "#FF0000").
+    HexString(String),
 }
 
-#[derive(Deserialize)]
-struct ZedThemeEntry {
-    name: String,
-    appearance: String,
-    style: ZedStyle,
+/// A single design token with $value (and optional $type, $description).
+#[derive(Deserialize, Debug)]
+struct DtcgToken {
+    #[serde(rename = "$value")]
+    value: serde_json::Value,
+    #[serde(rename = "$type")]
+    _type: Option<String>,
+    #[serde(rename = "$description")]
+    _description: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct ZedStyle {
-    #[serde(flatten)]
-    tokens: HashMap<String, serde_json::Value>,
+// ── Color helpers ──
+
+fn hex(color: u32) -> Color32 {
+    let r = ((color >> 16) & 0xFF) as u8;
+    let g = ((color >> 8) & 0xFF) as u8;
+    let b = (color & 0xFF) as u8;
+    Color32::from_rgb(r, g, b)
 }
 
-#[derive(Deserialize)]
-struct ZedPlayer {
-    cursor: Option<String>,
-    selection: Option<String>,
-}
-
-// ── Color parsing ──
-
-fn parse_hex_color(s: &str) -> Option<Hsla> {
+fn parse_hex_color(s: &str) -> Option<Color32> {
     let s = s.trim_start_matches('#');
-    let (r, g, b, a) = match s.len() {
+    match s.len() {
         6 => {
             let r = u8::from_str_radix(&s[0..2], 16).ok()?;
             let g = u8::from_str_radix(&s[2..4], 16).ok()?;
             let b = u8::from_str_radix(&s[4..6], 16).ok()?;
-            (r, g, b, 255u8)
+            Some(Color32::from_rgb(r, g, b))
         }
         8 => {
             let r = u8::from_str_radix(&s[0..2], 16).ok()?;
             let g = u8::from_str_radix(&s[2..4], 16).ok()?;
             let b = u8::from_str_radix(&s[4..6], 16).ok()?;
             let a = u8::from_str_radix(&s[6..8], 16).ok()?;
-            (r, g, b, a)
+            Some(Color32::from_rgba_unmultiplied(r, g, b, a))
         }
-        _ => return None,
+        _ => None,
+    }
+}
+
+/// Convert a DTCG color value (object or hex string) to an egui Color32.
+fn dtcg_color_to_color32(val: &serde_json::Value) -> Option<Color32> {
+    let parsed: DtcgColorValue = serde_json::from_value(val.clone()).ok()?;
+    match parsed {
+        DtcgColorValue::Object { components, alpha, hex: hex_str, .. } => {
+            if components.len() >= 3 {
+                let r = (components[0].clamp(0.0, 1.0) * 255.0).round() as u8;
+                let g = (components[1].clamp(0.0, 1.0) * 255.0).round() as u8;
+                let b = (components[2].clamp(0.0, 1.0) * 255.0).round() as u8;
+                let a = alpha.map(|a| (a.clamp(0.0, 1.0) * 255.0).round() as u8).unwrap_or(255);
+                Some(Color32::from_rgba_unmultiplied(r, g, b, a))
+            } else {
+                // Fallback to hex if components are incomplete
+                hex_str.as_deref().and_then(parse_hex_color)
+            }
+        }
+        DtcgColorValue::HexString(s) => parse_hex_color(&s),
+    }
+}
+
+// ── DTCG Token file parsing ──
+
+/// Navigate into a JSON object by a dot-separated path.
+fn json_get<'a>(root: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+    let mut current = root;
+    for key in path.split('.') {
+        current = current.get(key)?;
+    }
+    Some(current)
+}
+
+/// Extract a Color32 from a DTCG token file at the given path.
+/// Path uses dots to navigate groups, ending at a token with $value.
+fn resolve_color(root: &serde_json::Value, path: &str) -> Option<Color32> {
+    let token_obj = json_get(root, path)?;
+    let value = token_obj.get("$value")?;
+    dtcg_color_to_color32(value)
+}
+
+/// Parse a DTCG `.tokens.json` file into a Theme.
+/// Expects the standard Colomin token structure with groups:
+///   color.background, color.surface, color.border,
+///   color.text.{primary,secondary,tertiary},
+///   color.accent.{default,hover,on-accent,subtle},
+///   color.state.{edited,hover-row,danger,selection},
+///   color.chrome.{status-bar,gutter,line-number}
+fn parse_dtcg_theme(json: &str, name: &str) -> Result<Theme, String> {
+    let root: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("Failed to parse theme '{}': {}", name, e))?;
+
+    // Determine appearance from $extensions.dev.colomin.appearance
+    let appearance = root
+        .get("$extensions")
+        .and_then(|ext| ext.get("dev.colomin"))
+        .and_then(|cm| cm.get("appearance"))
+        .and_then(|a| a.as_str())
+        .map(|s| match s {
+            "light" => ThemeAppearance::Light,
+            _ => ThemeAppearance::Dark,
+        })
+        .unwrap_or(ThemeAppearance::Dark);
+
+    // Fallback defaults based on appearance
+    let (fb_bg, fb_surface, fb_border) = match appearance {
+        ThemeAppearance::Light => (hex(0xFFFFFF), hex(0xFFFFFF), hex(0xE0E0E0)),
+        ThemeAppearance::Dark => (hex(0x1A1A1A), hex(0x1A1A1A), hex(0x3A3A3A)),
     };
-    Some(rgba_to_hsla(r, g, b, a as f32 / 255.0))
+    let (fb_text_pri, fb_text_sec, fb_text_ter) = match appearance {
+        ThemeAppearance::Light => (hex(0x000000), hex(0x555555), hex(0x929292)),
+        ThemeAppearance::Dark => (hex(0xDDDDDD), hex(0x9E9E9E), hex(0x6E6E6E)),
+    };
+    let (fb_accent, fb_danger) = match appearance {
+        ThemeAppearance::Light => (hex(0x3B82F6), hex(0xEF4444)),
+        ThemeAppearance::Dark => (hex(0x60A5FA), hex(0xEF4444)),
+    };
+
+    let bg = resolve_color(&root, "color.background").unwrap_or(fb_bg);
+    let surface = resolve_color(&root, "color.surface").unwrap_or(fb_surface);
+    let border = resolve_color(&root, "color.border").unwrap_or(fb_border);
+    let text_primary = resolve_color(&root, "color.text.primary").unwrap_or(fb_text_pri);
+    let text_secondary = resolve_color(&root, "color.text.secondary").unwrap_or(fb_text_sec);
+    let text_tertiary = resolve_color(&root, "color.text.tertiary").unwrap_or(fb_text_ter);
+    let accent = resolve_color(&root, "color.accent.default").unwrap_or(fb_accent);
+    let accent_hover = resolve_color(&root, "color.accent.hover").unwrap_or(accent);
+    let accent_text = resolve_color(&root, "color.accent.on-accent")
+        .unwrap_or(if appearance == ThemeAppearance::Light { hex(0xFFFFFF) } else { hex(0x000000) });
+    let accent_subtle = resolve_color(&root, "color.accent.subtle").unwrap_or(accent);
+    let edited = resolve_color(&root, "color.state.edited").unwrap_or(bg);
+    let hover_row = resolve_color(&root, "color.state.hover-row").unwrap_or(bg);
+    let danger = resolve_color(&root, "color.state.danger").unwrap_or(fb_danger);
+    let selection = resolve_color(&root, "color.state.selection").unwrap_or(accent_subtle);
+    let status_bar_bg = resolve_color(&root, "color.chrome.status-bar").unwrap_or(bg);
+    let gutter_bg = resolve_color(&root, "color.chrome.gutter").unwrap_or(surface);
+    let line_number = resolve_color(&root, "color.chrome.line-number").unwrap_or(text_tertiary);
+
+    Ok(Theme {
+        name: name.to_string(),
+        appearance,
+        colors: ThemeColors {
+            bg,
+            surface,
+            border,
+            text_primary,
+            text_secondary,
+            text_tertiary,
+            accent,
+            accent_hover,
+            accent_text,
+            accent_subtle,
+            edited,
+            hover_row,
+            danger,
+            status_bar_bg,
+            gutter_bg,
+            line_number,
+            selection,
+        },
+    })
 }
 
-fn rgba_to_hsla(r: u8, g: u8, b: u8, a: f32) -> Hsla {
-    // Use gpui's rgb conversion for accuracy
-    let rgba = gpui::rgba(
-        ((r as u32) << 24) | ((g as u32) << 16) | ((b as u32) << 8) | (a * 255.0) as u32,
-    );
-    rgba.into()
-}
+/// Apply a ThemeColors palette to an egui Context.
+pub fn apply_theme(ctx: &egui::Context, colors: &ThemeColors) {
+    let mut visuals = egui::Visuals::light();
 
-fn hex(color: u32) -> Hsla {
-    rgb(color).into()
-}
+    visuals.panel_fill = colors.bg;
+    visuals.window_fill = colors.surface;
+    visuals.extreme_bg_color = colors.surface;
+    visuals.faint_bg_color = colors.surface;
 
-// ── Token extraction ──
+    visuals.widgets.noninteractive.bg_fill = colors.surface;
+    visuals.widgets.noninteractive.weak_bg_fill = colors.surface;
+    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, colors.border);
+    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, colors.text_primary);
 
-impl ZedStyle {
-    fn get_color(&self, key: &str) -> Option<Hsla> {
-        self.tokens
-            .get(key)
-            .and_then(|v| v.as_str())
-            .and_then(parse_hex_color)
-    }
+    visuals.widgets.inactive.bg_fill = colors.surface;
+    visuals.widgets.inactive.weak_bg_fill = colors.surface;
+    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, colors.border);
+    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, colors.text_primary);
 
-    fn get_color_or(&self, key: &str, fallback: Hsla) -> Hsla {
-        self.get_color(key).unwrap_or(fallback)
-    }
+    visuals.widgets.hovered.bg_fill = colors.hover_row;
+    visuals.widgets.hovered.weak_bg_fill = colors.hover_row;
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, colors.accent);
+    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, colors.text_primary);
 
-    fn get_players(&self) -> Vec<ZedPlayer> {
-        self.tokens
-            .get("players")
-            .and_then(|v| serde_json::from_value::<Vec<ZedPlayer>>(v.clone()).ok())
-            .unwrap_or_default()
-    }
-}
+    visuals.widgets.active.bg_fill = colors.accent_subtle;
+    visuals.widgets.active.weak_bg_fill = colors.accent_subtle;
+    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, colors.accent);
+    visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, colors.text_primary);
 
-// ── Theme conversion ──
+    visuals.selection.bg_fill = colors.selection;
+    visuals.selection.stroke = egui::Stroke::new(1.0, colors.accent);
 
-fn zed_style_to_colors(style: &ZedStyle, appearance: ThemeAppearance) -> ThemeColors {
-    let players = style.get_players();
-    let accent = players
-        .first()
-        .and_then(|p| p.cursor.as_ref())
-        .and_then(|c| parse_hex_color(c))
-        .unwrap_or_else(|| match appearance {
-            ThemeAppearance::Light => hex(0x3B82F6),
-            ThemeAppearance::Dark => hex(0x60A5FA),
-        });
+    visuals.override_text_color = Some(colors.text_primary);
 
-    let selection = players
-        .first()
-        .and_then(|p| p.selection.as_ref())
-        .and_then(|c| parse_hex_color(c))
-        .unwrap_or_else(|| accent.opacity(0.15));
-
-    let bg = style.get_color_or(
-        "background",
-        match appearance {
-            ThemeAppearance::Light => hex(0xFFFFFF),
-            ThemeAppearance::Dark => hex(0x1A1A1A),
-        },
-    );
-
-    let surface = style
-        .get_color("editor.background")
-        .or_else(|| style.get_color("surface.background"))
-        .unwrap_or(bg);
-
-    let border = style.get_color_or(
-        "border",
-        match appearance {
-            ThemeAppearance::Light => hex(0xE0E0E0),
-            ThemeAppearance::Dark => hex(0x3A3A3A),
-        },
-    );
-
-    let text_primary = style
-        .get_color("editor.foreground")
-        .or_else(|| style.get_color("text"))
-        .unwrap_or_else(|| match appearance {
-            ThemeAppearance::Light => hex(0x000000),
-            ThemeAppearance::Dark => hex(0xDDDDDD),
-        });
-
-    let text_secondary = style.get_color_or(
-        "text.muted",
-        match appearance {
-            ThemeAppearance::Light => hex(0x555555),
-            ThemeAppearance::Dark => hex(0x9E9E9E),
-        },
-    );
-
-    let text_tertiary = style.get_color_or(
-        "text.placeholder",
-        match appearance {
-            ThemeAppearance::Light => hex(0x929292),
-            ThemeAppearance::Dark => hex(0x6E6E6E),
-        },
-    );
-
-    let hover_row = style
-        .get_color("editor.active_line.background")
-        .or_else(|| style.get_color("ghost_element.hover"))
-        .unwrap_or_else(|| match appearance {
-            ThemeAppearance::Light => hex(0xF0F0F0),
-            ThemeAppearance::Dark => hex(0x272727),
-        });
-
-    let status_bar_bg = style.get_color("status_bar.background").unwrap_or(bg);
-
-    let gutter_bg = style
-        .get_color("editor.gutter.background")
-        .unwrap_or(surface);
-
-    let line_number = style.get_color_or("editor.line_number", text_tertiary);
-
-    let edited = style
-        .get_color("modified.background")
-        .unwrap_or_else(|| match appearance {
-            ThemeAppearance::Light => hex(0xFFF2E5),
-            ThemeAppearance::Dark => hex(0x3A310E),
-        });
-
-    let danger = style.get_color_or(
-        "error",
-        match appearance {
-            ThemeAppearance::Light => hex(0xEF4444),
-            ThemeAppearance::Dark => hex(0xEF4444),
-        },
-    );
-
-    let accent_subtle = selection;
-
-    ThemeColors {
-        bg,
-        surface,
-        border,
-        text_primary,
-        text_secondary,
-        text_tertiary,
-        accent,
-        accent_hover: accent,
-        accent_text: if appearance == ThemeAppearance::Light {
-            hex(0xFFFFFF)
-        } else {
-            hex(0x000000)
-        },
-        accent_subtle,
-        edited,
-        hover_row,
-        danger,
-        status_bar_bg,
-        gutter_bg,
-        line_number,
-        selection,
-    }
+    ctx.set_visuals(visuals);
 }
 
 // ── Public API ──
 
-/// Parse a Zed theme JSON string into a list of themes
+/// Parse a DTCG theme JSON string.
 #[must_use]
-pub fn parse_zed_theme(json: &str) -> Result<Vec<ZedTheme>, String> {
-    let file: ZedThemeFile =
-        serde_json::from_str(json).map_err(|e| format!("Failed to parse theme: {}", e))?;
-
-    let mut themes = Vec::new();
-    for entry in &file.themes {
-        let appearance = match entry.appearance.as_str() {
-            "light" => ThemeAppearance::Light,
-            "dark" => ThemeAppearance::Dark,
-            _ => ThemeAppearance::Dark,
-        };
-
-        let colors = zed_style_to_colors(&entry.style, appearance);
-        themes.push(ZedTheme {
-            name: entry.name.clone(),
-            appearance,
-            colors,
-        });
-    }
-
-    Ok(themes)
+pub fn parse_theme(json: &str, name: &str) -> Result<Theme, String> {
+    parse_dtcg_theme(json, name)
 }
 
-/// Load a Zed theme from a file path
+/// Load a DTCG theme from a file path.
 #[must_use]
 #[allow(dead_code)]
-pub fn load_zed_theme_file(path: &Path) -> Result<Vec<ZedTheme>, String> {
+pub fn load_theme_file(path: &Path) -> Result<Theme, String> {
     let json =
         std::fs::read_to_string(path).map_err(|e| format!("Failed to read theme file: {}", e))?;
-    parse_zed_theme(&json)
+    let name = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Unknown");
+    // Strip .tokens suffix if present (e.g. "colomin-light.tokens.json" → "colomin-light")
+    let name = name.strip_suffix(".tokens").unwrap_or(name);
+    parse_dtcg_theme(&json, name)
 }
 
-/// Get all bundled themes
-pub fn bundled_themes() -> Vec<ZedTheme> {
+/// Get all bundled themes (loaded from DTCG .tokens.json files at compile time).
+pub fn bundled_themes() -> Vec<Theme> {
     let mut all = Vec::new();
 
-    // Colomin Light (our original design) — always first / default
-    all.push(ZedTheme {
-        name: "Colomin Light".into(),
-        appearance: ThemeAppearance::Light,
-        colors: default_light(),
-    });
-
-    // Colomin Dark (our original design)
-    all.push(ZedTheme {
-        name: "Colomin Dark".into(),
-        appearance: ThemeAppearance::Dark,
-        colors: colomin_dark(),
-    });
-
-    // GitHub Theme
-    let github_json = include_str!("../../themes/github.json");
-    if let Ok(themes) = parse_zed_theme(github_json) {
-        all.extend(themes);
+    // Colomin Light — always first / default
+    let colomin_light_json = include_str!("../../themes/colomin-light.tokens.json");
+    if let Ok(theme) = parse_dtcg_theme(colomin_light_json, "Colomin Light") {
+        all.push(theme);
     }
 
-    // Fallback built-in themes if JSON parsing fails
+    // Colomin Dark
+    let colomin_dark_json = include_str!("../../themes/colomin-dark.tokens.json");
+    if let Ok(theme) = parse_dtcg_theme(colomin_dark_json, "Colomin Dark") {
+        all.push(theme);
+    }
+
+    // GitHub Light
+    let github_light_json = include_str!("../../themes/github-light.tokens.json");
+    if let Ok(theme) = parse_dtcg_theme(github_light_json, "GitHub Light") {
+        all.push(theme);
+    }
+
+    // GitHub Dark
+    let github_dark_json = include_str!("../../themes/github-dark.tokens.json");
+    if let Ok(theme) = parse_dtcg_theme(github_dark_json, "GitHub Dark") {
+        all.push(theme);
+    }
+
+    // Absolute fallback
     if all.is_empty() {
-        all.push(ZedTheme {
+        all.push(Theme {
             name: "Light".into(),
             appearance: ThemeAppearance::Light,
             colors: default_light(),
         });
-        all.push(ZedTheme {
+        all.push(Theme {
             name: "Dark".into(),
             appearance: ThemeAppearance::Dark,
             colors: default_dark(),
@@ -324,6 +325,7 @@ pub fn bundled_themes() -> Vec<ZedTheme> {
     all
 }
 
+/// Hardcoded fallback light theme (only used if all JSON parsing fails).
 pub fn default_light() -> ThemeColors {
     ThemeColors {
         bg: hex(0xFAFAFA),
@@ -346,6 +348,7 @@ pub fn default_light() -> ThemeColors {
     }
 }
 
+/// Hardcoded fallback dark theme (only used if all JSON parsing fails).
 pub fn default_dark() -> ThemeColors {
     ThemeColors {
         bg: hex(0x0F0F0F),
@@ -365,27 +368,5 @@ pub fn default_dark() -> ThemeColors {
         gutter_bg: hex(0x1A1A1A),
         line_number: hex(0x4A4A4A),
         selection: hex(0x172554),
-    }
-}
-
-pub fn colomin_dark() -> ThemeColors {
-    ThemeColors {
-        bg: hex(0x141414),
-        surface: hex(0x1B1B1B),
-        border: hex(0x2B2B2B),
-        text_primary: hex(0xE8E8E8),
-        text_secondary: hex(0xA1A1A1),
-        text_tertiary: hex(0x6E6E6E),
-        accent: hex(0x60A5FA),
-        accent_hover: hex(0x3B82F6),
-        accent_text: hex(0x08111F),
-        accent_subtle: hex(0x10233D),
-        edited: hex(0x3A2410),
-        hover_row: hex(0x1E293B),
-        danger: hex(0xEF4444),
-        status_bar_bg: hex(0x141414),
-        gutter_bg: hex(0x1B1B1B),
-        line_number: hex(0x6E6E6E),
-        selection: hex(0x17335C),
     }
 }

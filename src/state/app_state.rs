@@ -30,7 +30,7 @@ pub struct ColumnLayout {
     version: u64,
 }
 
-/// The main application state, held as a GPUI Model
+/// The main application state for a single tab
 pub struct AppState {
     pub file: Option<OpenFile>,
     // Selection
@@ -73,14 +73,28 @@ pub struct AppState {
     pub settings_menu: bool,
     /// Whether the settings menu is currently showing the theme list submenu
     pub settings_theme_submenu: bool,
+    /// Whether the settings menu is currently showing the font list submenu
+    pub settings_font_submenu: bool,
+    /// Whether the settings menu is currently showing the debug submenu
+    pub settings_debug_submenu: bool,
+    /// Currently selected font family name. None = egui default.
+    pub selected_font: Option<String>,
+    /// Cell text size in points. Default 12.0, range 10–18.
+    pub font_size: f32,
     /// View-only header mode toggle. When false, header labels use Excel letters.
     pub header_row_enabled: bool,
+    /// Highlight the full row when the mouse hovers over any cell in it.
+    pub row_highlight_on_hover: bool,
     /// Whether the user is currently dragging to select cells
     pub is_dragging: bool,
     /// Which stat to show by default in the center zone when a range is selected
     pub preferred_stat: PreferredStat,
     /// Whether the stats picker menu is open
     pub stats_menu: bool,
+    /// Clipboard format used when the user copies a selection
+    pub copy_mode: super::CopyMode,
+    /// Whether the settings menu is showing the copy mode submenu
+    pub settings_copy_mode_submenu: bool,
     /// Screen-space X center of the stat badge (for anchoring the stats menu)
     pub stat_badge_center_x: f32,
     /// Async-computed stats for large selections (count, numeric_count, sum, avg, min, max, char_len)
@@ -145,7 +159,7 @@ impl AppState {
             redo_stack: Vec::new(),
             column_widths: HashMap::new(),
             default_column_width: 150.0,
-            row_height: 28.0,
+            row_height: 30.0,
             row_heights: HashMap::new(),
             search_query: String::new(),
             search_results: Vec::new(),
@@ -161,10 +175,17 @@ impl AppState {
             context_menu: None,
             settings_menu: false,
             settings_theme_submenu: false,
+            settings_font_submenu: false,
+            settings_debug_submenu: false,
+            selected_font: None,
+            font_size: 12.0,
             header_row_enabled: true,
+            row_highlight_on_hover: true,
             is_dragging: false,
             preferred_stat: PreferredStat::Count,
             stats_menu: false,
+            copy_mode: super::CopyMode::Text,
+            settings_copy_mode_submenu: false,
             stat_badge_center_x: 0.0,
             computed_stats: None,
             computing_stats: false,
@@ -229,13 +250,43 @@ impl AppState {
         }
     }
 
-    pub fn get_display_cell(&self, display_row: usize, col: usize) -> Option<String> {
+    /// Map a display column index to the physical CSV column index.
+    /// When `col_order` is not set, returns `display_col` unchanged (identity).
+    pub fn display_to_physical_col(&self, display_col: usize) -> usize {
+        if let Some(ref file) = self.file {
+            if let Some(ref order) = file.col_order {
+                if let Some(src) = order.get(display_col) {
+                    return match src {
+                        super::ColSource::Original(idx) => *idx,
+                        super::ColSource::Inserted(_) => display_col,
+                    };
+                }
+            }
+        }
+        display_col
+    }
+
+    pub fn get_display_cell(&self, display_row: usize, display_col: usize) -> Option<String> {
+        let file = self.file.as_ref()?;
+        let actual_row = self.display_row_to_actual_row(display_row)?;
+
+        // Inserted columns: don't fall through to cache (cache holds original CSV data).
+        // Return the explicit edit if one exists, otherwise empty.
+        if let Some(ref col_order) = file.col_order {
+            if let Some(super::ColSource::Inserted(_)) = col_order.get(display_col) {
+                return Some(
+                    file.edits.get(&(actual_row, display_col)).cloned().unwrap_or_default(),
+                );
+            }
+        }
+
+        let physical_col = self.display_to_physical_col(display_col);
         self.get_display_row(display_row)
-            .and_then(|row| row.get(col).cloned())
+            .and_then(|row| row.get(physical_col).cloned())
     }
 
     pub fn col_count(&self) -> usize {
-        self.file.as_ref().map_or(0, |f| f.metadata.columns.len())
+        self.file.as_ref().map_or(0, |f| f.current_col_count())
     }
 
     pub fn column_width(&self, col: usize) -> f32 {
