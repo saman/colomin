@@ -21,6 +21,7 @@ struct TabState {
     loading: Option<LoadingHandle>,
     sorting_rx: Option<std::sync::mpsc::Receiver<Result<SortResult, String>>>,
     stats_rx: Option<std::sync::mpsc::Receiver<(String, crate::ui::stats::Stats)>>,
+    was_resizing: bool,
 }
 
 impl TabState {
@@ -31,6 +32,7 @@ impl TabState {
             loading: None,
             sorting_rx: None,
             stats_rx: None,
+            was_resizing: false,
         }
     }
 
@@ -121,6 +123,89 @@ impl AppConfig {
 /// Read only the tab_mode flag from settings — used by main.rs before the app starts.
 pub fn is_tab_mode() -> bool {
     AppConfig::load().tab_mode
+}
+
+// ── Per-file settings (persisted) ────────────────────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
+struct FileSettings {
+    #[serde(default)]
+    header_row_enabled: Option<bool>,
+    #[serde(default)]
+    column_widths: std::collections::HashMap<usize, f32>,
+    #[serde(default)]
+    row_heights: std::collections::HashMap<usize, f32>,
+    #[serde(default)]
+    sort_column_index: Option<usize>,
+    #[serde(default)]
+    sort_ascending: Option<bool>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct FileSettingsStore(std::collections::HashMap<String, FileSettings>);
+
+impl FileSettingsStore {
+    fn path() -> std::path::PathBuf {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        std::path::Path::new(&home)
+            .join(".config").join("colomin").join("file_settings.json")
+    }
+
+    fn load() -> Self {
+        std::fs::read_to_string(Self::path())
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    fn disk_save(&self) {
+        let path = Self::path();
+        if let Some(dir) = path.parent() { let _ = std::fs::create_dir_all(dir); }
+        if let Ok(json) = serde_json::to_string_pretty(self) {
+            let _ = std::fs::write(&path, json);
+        }
+    }
+
+    /// Load stored settings for a specific file path (one-shot, no ownership kept).
+    fn get_for_path(file_path: &str) -> Option<FileSettings> {
+        Self::load().0.remove(file_path)
+    }
+
+    /// Persist current column widths, row heights, header mode, and sort for the tab's file.
+    fn save_for_tab(tab: &TabState) {
+        let Some(ref file) = tab.state.file else { return };
+        let path = file.file_path.to_string_lossy().to_string();
+        let mut store = Self::load();
+        store.0.insert(path, FileSettings {
+            header_row_enabled: Some(tab.state.header_row_enabled),
+            column_widths: tab.state.column_widths.clone(),
+            row_heights: tab.state.row_heights.clone(),
+            sort_column_index: tab.state.sort_state.as_ref().map(|s| s.column_index),
+            sort_ascending: tab.state.sort_state.as_ref()
+                .map(|s| matches!(s.direction, SortDirection::Asc)),
+        });
+        store.disk_save();
+    }
+
+    /// Remove stored settings for the tab's file and reset view state to defaults.
+    fn reset_for_tab(tab: &mut TabState) {
+        let Some(ref file) = tab.state.file else { return };
+        let path = file.file_path.to_string_lossy().to_string();
+        let mut store = Self::load();
+        store.0.remove(&path);
+        store.disk_save();
+
+        tab.state.header_row_enabled = true;
+        tab.state.column_widths.clear();
+        tab.state.row_heights.clear();
+        tab.state.sort_state = None;
+        if let Some(ref mut f) = tab.state.file {
+            f.sort_permutation = None;
+        }
+        tab.state.clear_cache();
+        tab.state.invalidate_row_layout();
+        tab.state.invalidate_col_layout();
+    }
 }
 
 // ── Main app struct ───────────────────────────────────────────────────────────
@@ -273,7 +358,26 @@ impl eframe::App for ColominApp {
             tab.state.loading_progress = progress;
             match handle.rx.try_recv() {
                 Ok(Ok(loaded)) => {
+                    let stored = FileSettingsStore::get_for_path(&loaded.path.clone());
                     file_open::apply_loaded_file(&mut tab.state, loaded);
+                    if let Some(settings) = stored {
+                        if let Some(header) = settings.header_row_enabled {
+                            tab.state.header_row_enabled = header;
+                            tab.state.clear_cache();
+                            tab.state.invalidate_row_layout();
+                        }
+                        if !settings.column_widths.is_empty() {
+                            tab.state.column_widths = settings.column_widths;
+                            tab.state.invalidate_col_layout();
+                        }
+                        if !settings.row_heights.is_empty() {
+                            tab.state.row_heights = settings.row_heights;
+                            tab.state.invalidate_row_layout();
+                        }
+                        if let (Some(col), Some(asc)) = (settings.sort_column_index, settings.sort_ascending) {
+                            tab.state.pending_sort = Some((col, asc));
+                        }
+                    }
                     tab.loading = None;
                     ctx.request_repaint();
                 }
@@ -305,6 +409,7 @@ impl eframe::App for ColominApp {
                         tab.state.invalidate_row_layout();
                     }
                     tab.sorting_rx = None;
+                    FileSettingsStore::save_for_tab(tab);
                     ctx.request_repaint();
                 }
                 Ok(Err(e)) => { eprintln!("Sort error: {}", e); tab.sorting_rx = None; }
@@ -734,7 +839,9 @@ impl eframe::App for ColominApp {
         let mut font_size_change: Option<f32> = None;
         let mut ui_scale_change: Option<f32> = None;
         let mut reset_all = false;
+        let mut reset_file_settings = false;
         let mut copy_mode_change: Option<crate::state::CopyMode> = None;
+        let header_before = tab.state.header_row_enabled;
         Self::show_status_bar_for(
             tab,
             &self.available_fonts,
@@ -750,9 +857,13 @@ impl eframe::App for ColominApp {
             self.ui_scale,
             &mut ui_scale_change,
             &mut reset_all,
+            &mut reset_file_settings,
             &mut copy_mode_change,
             ctx,
         );
+        if tab.state.header_row_enabled != header_before {
+            FileSettingsStore::save_for_tab(tab);
+        }
 
         if let Some(choice) = font_choice {
             let tab = &mut self.tabs[self.active_tab];
@@ -844,6 +955,12 @@ impl eframe::App for ColominApp {
             }.save();
         }
 
+        if reset_file_settings {
+            let tab = &mut self.tabs[self.active_tab];
+            FileSettingsStore::reset_for_tab(tab);
+            tab.state.settings_menu = false;
+        }
+
         if reset_all {
             let defaults = AppConfig::default();
             self.ui_scale = defaults.ui_scale;
@@ -862,6 +979,208 @@ impl eframe::App for ColominApp {
             defaults.save();
         }
 
+        // ── Cell editor sidebar ──
+        let tab = &mut self.tabs[self.active_tab];
+        let mut sidebar_save: Option<(usize, usize, String)> = None;
+        let mut sidebar_close = false;
+        let mut sidebar_new_width: Option<f32> = None;
+        if tab.state.cell_editor.is_some() {
+            let colors      = tab.state.current_theme();
+            let sidebar_fill = colors.surface;
+            let text_pri    = colors.text_primary;
+            let text_sec    = colors.text_secondary;
+            let accent      = colors.accent;
+            let border      = colors.border;
+            let danger      = colors.danger;
+            let sidebar_w   = tab.table.cell_editor_width;
+
+            let col_label = if let Some((_, col, _)) = tab.state.cell_editor {
+                crate::ui::table::col_name_for_display_pub(&tab.state, col)
+            } else {
+                String::new()
+            };
+            let row_label = if let Some((row, _, _)) = tab.state.cell_editor {
+                format!("Row {}", row + 1)
+            } else {
+                String::new()
+            };
+
+            // Use resizable(false) + manual drag handle so the width never snaps
+            // back due to egui's own panel-open animation conflicting with user drags.
+            egui::SidePanel::right("cell_editor_panel")
+                .resizable(false)
+                .default_width(sidebar_w)
+                .min_width(sidebar_w)
+                .max_width(sidebar_w)
+                .frame(egui::Frame::NONE
+                    .fill(sidebar_fill)
+                    .inner_margin(egui::Margin::same(0)))
+                .show(ctx, |ui| {
+                    let panel_rect = ui.max_rect();
+
+                    // ── Custom resize handle (left 5px strip) ──
+                    let handle_rect = egui::Rect::from_min_max(
+                        panel_rect.left_top(),
+                        egui::pos2(panel_rect.left() + 5.0, panel_rect.bottom()),
+                    );
+                    let handle_resp = ui.interact(
+                        handle_rect,
+                        egui::Id::new("cell_editor_resize"),
+                        egui::Sense::drag(),
+                    );
+                    if handle_resp.hovered() || handle_resp.dragged() {
+                        ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                    }
+                    if handle_resp.dragged() {
+                        // Dragging left → dx negative → width increases.
+                        let new_w = (sidebar_w - handle_resp.drag_delta().x)
+                            .clamp(200.0, 800.0);
+                        sidebar_new_width = Some(new_w);
+                    }
+                    // Paint the handle as a 1px border line (accent when active).
+                    let handle_color = if handle_resp.hovered() || handle_resp.dragged() {
+                        accent
+                    } else {
+                        border
+                    };
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_max(
+                            panel_rect.left_top(),
+                            egui::pos2(panel_rect.left() + 1.0, panel_rect.bottom()),
+                        ),
+                        0.0,
+                        handle_color,
+                    );
+
+                    // ── Header bar ──
+                    let header_h = 40.0;
+                    let header_rect = egui::Rect::from_min_size(
+                        panel_rect.min,
+                        egui::vec2(panel_rect.width(), header_h),
+                    );
+                    ui.painter().rect_filled(header_rect, 0.0, colors.gutter_bg);
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_max(
+                            egui::pos2(header_rect.min.x, header_rect.max.y - 1.0),
+                            header_rect.max,
+                        ),
+                        0.0,
+                        border,
+                    );
+
+                    // Title
+                    ui.painter().text(
+                        egui::pos2(panel_rect.left() + 14.0, header_rect.center().y - 7.0),
+                        egui::Align2::LEFT_CENTER,
+                        "Edit Cell",
+                        egui::FontId::proportional(13.0),
+                        text_pri,
+                    );
+                    ui.painter().text(
+                        egui::pos2(panel_rect.left() + 14.0, header_rect.center().y + 7.0),
+                        egui::Align2::LEFT_CENTER,
+                        format!("{} · {}", row_label, col_label),
+                        egui::FontId::proportional(11.0),
+                        text_sec,
+                    );
+
+                    // Close (×) button
+                    let close_rect = egui::Rect::from_center_size(
+                        egui::pos2(panel_rect.right() - 20.0, header_rect.center().y),
+                        egui::vec2(24.0, 24.0),
+                    );
+                    let close_resp = ui.interact(
+                        close_rect,
+                        egui::Id::new("cell_editor_close_btn"),
+                        egui::Sense::click(),
+                    );
+                    ui.painter().text(
+                        close_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "×",
+                        egui::FontId::proportional(18.0),
+                        if close_resp.hovered() { text_pri } else { text_sec },
+                    );
+                    if close_resp.clicked() {
+                        sidebar_close = true;
+                    }
+
+                    // Push layout cursor below the header
+                    ui.add_space(header_h);
+                    ui.add_space(10.0);
+
+                    let available_w = ui.available_width() - 24.0;
+                    let available_h = (ui.available_height() - 60.0).max(80.0);
+
+                    ui.horizontal(|ui| {
+                        ui.add_space(12.0);
+                        if let Some((_, _, ref mut buf)) = tab.state.cell_editor {
+                            let te = egui::TextEdit::multiline(buf)
+                                .font(egui::FontId::proportional(13.0))
+                                .desired_width(available_w)
+                                .desired_rows(1)
+                                .min_size(egui::vec2(available_w, available_h))
+                                .frame(true);
+                            ui.add(te);
+                        }
+                    });
+
+                    ui.add_space(10.0);
+
+                    ui.horizontal(|ui| {
+                        ui.add_space(12.0);
+                        let save_btn = egui::Button::new(
+                            egui::RichText::new("Save").color(egui::Color32::WHITE).size(12.0),
+                        )
+                        .fill(accent)
+                        .min_size(egui::vec2(70.0, 28.0))
+                        .corner_radius(egui::CornerRadius::same(4));
+                        if ui.add(save_btn).clicked() {
+                            if let Some((r, c, ref buf)) = tab.state.cell_editor {
+                                sidebar_save = Some((r, c, buf.clone()));
+                            }
+                        }
+
+                        ui.add_space(8.0);
+
+                        let cancel_btn = egui::Button::new(
+                            egui::RichText::new("Cancel").color(danger).size(12.0),
+                        )
+                        .fill(egui::Color32::TRANSPARENT)
+                        .stroke(egui::Stroke::new(1.0, danger))
+                        .min_size(egui::vec2(70.0, 28.0))
+                        .corner_radius(egui::CornerRadius::same(4));
+                        if ui.add(cancel_btn).clicked() {
+                            sidebar_close = true;
+                        }
+                    });
+
+                    // Cmd+Enter → save
+                    if ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command) {
+                        if let Some((r, c, ref buf)) = tab.state.cell_editor {
+                            sidebar_save = Some((r, c, buf.clone()));
+                        }
+                    }
+                    // Escape → close
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        sidebar_close = true;
+                    }
+                });
+        }
+
+        // Apply sidebar actions
+        let tab = &mut self.tabs[self.active_tab];
+        if let Some(w) = sidebar_new_width {
+            tab.table.cell_editor_width = w;
+        }
+        if let Some((r, c, new_val)) = sidebar_save {
+            crate::ui::table::commit_edit_pub(&mut tab.state, r, c, new_val);
+            tab.state.cell_editor = None;
+        }
+        if sidebar_close {
+            tab.state.cell_editor = None;
+        }
+
         // ── Main table ──
         let tab = &mut self.tabs[self.active_tab];
         let panel_fill = tab.state.current_theme().bg;
@@ -870,6 +1189,15 @@ impl eframe::App for ColominApp {
             .show(ctx, |ui| {
                 tab.table.show(ui, &mut tab.state, ctx);
             });
+
+        // Save file settings when a column/row resize drag ends or double-click auto-fit fires.
+        let tab = &mut self.tabs[self.active_tab];
+        let is_resizing = tab.table.is_resizing();
+        if (tab.was_resizing && !is_resizing) || tab.table.save_requested {
+            FileSettingsStore::save_for_tab(tab);
+        }
+        tab.was_resizing = is_resizing;
+        tab.table.save_requested = false;
     }
 }
 
@@ -1010,6 +1338,7 @@ impl ColominApp {
         ui_scale: f32,
         ui_scale_change: &mut Option<f32>,
         reset_all: &mut bool,
+        reset_file_settings: &mut bool,
         copy_mode_change: &mut Option<crate::state::CopyMode>,
         ctx: &egui::Context,
     ) {
@@ -1070,7 +1399,8 @@ impl ColominApp {
         let mut new_reveal_log:    bool                                  = false;
         let mut new_open_log:      bool                                  = false;
         let mut new_font_size:     Option<f32>                           = None;
-        let mut new_reset_all:     bool                                  = false;
+        let mut new_reset_all:          bool                                  = false;
+        let mut new_reset_file_settings: bool                                 = false;
 
         egui::TopBottomPanel::bottom("status_bar")
             .frame(egui::Frame::NONE.fill(fill).inner_margin(egui::Margin::symmetric(8, 4)))
@@ -1588,6 +1918,16 @@ impl ColominApp {
 
                                     ui.separator();
 
+                                    // Reset file-specific settings (only when a file is open)
+                                    if has_file {
+                                        if Self::menu_row(
+                                            ui, "undo", text_sec,
+                                            egui::RichText::new("Reset File Settings").size(12.0).color(text_sec),
+                                            false, colors.accent,
+                                            |_ui| {},
+                                        ).clicked() { new_reset_file_settings = true; }
+                                    }
+
                                     // Reset all settings to defaults
                                     if Self::menu_row(
                                         ui, "undo", text_sec,
@@ -1692,6 +2032,9 @@ impl ColominApp {
         }
         if new_reset_all {
             *reset_all = true;
+        }
+        if new_reset_file_settings {
+            *reset_file_settings = true;
         }
     }
 

@@ -67,6 +67,8 @@ pub struct AppState {
     pub theme_index: usize,
     /// Pending edit request from double-click (row, col, value)
     pub editing_cell: Option<(usize, usize, String)>,
+    /// Cell editor sidebar state: (display_row, display_col, edit_buffer)
+    pub cell_editor: Option<(usize, usize, String)>,
     /// Context menu position and target cell (screen x, screen y, row, col)
     pub context_menu: Option<(f32, f32, usize, usize)>,
     /// Settings menu open state
@@ -172,6 +174,7 @@ impl AppState {
             loading_progress: 0.0,
             theme_index: remembered_theme,
             editing_cell: None,
+            cell_editor: None,
             context_menu: None,
             settings_menu: false,
             settings_theme_submenu: false,
@@ -268,15 +271,16 @@ impl AppState {
 
     pub fn get_display_cell(&self, display_row: usize, display_col: usize) -> Option<String> {
         let file = self.file.as_ref()?;
-        let actual_row = self.display_row_to_actual_row(display_row)?;
+        let actual_row = self.display_row_to_actual_row(display_row);
 
-        // Inserted columns: don't fall through to cache (cache holds original CSV data).
-        // Return the explicit edit if one exists, otherwise empty.
-        if let Some(ref col_order) = file.col_order {
-            if let Some(super::ColSource::Inserted(_)) = col_order.get(display_col) {
-                return Some(
-                    file.edits.get(&(actual_row, display_col)).cloned().unwrap_or_default(),
-                );
+        // Inserted columns: only applies to actual data rows.
+        if let Some(ar) = actual_row {
+            if let Some(ref col_order) = file.col_order {
+                if let Some(super::ColSource::Inserted(_)) = col_order.get(display_col) {
+                    return Some(
+                        file.edits.get(&(ar, display_col)).cloned().unwrap_or_default(),
+                    );
+                }
             }
         }
 

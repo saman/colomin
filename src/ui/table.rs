@@ -7,6 +7,10 @@ use crate::state::{AppState, BatchEditEntry, CellCoord, EditAction, SelectionTyp
 
 pub struct TableView {
     pub editing: Option<(usize, usize, String)>,
+    /// Persisted width of the cell-editor sidebar (survives open/close cycles).
+    pub cell_editor_width: f32,
+    /// Set to true when a double-click auto-fit changes column/row sizes, so app.rs can persist them.
+    pub save_requested: bool,
     /// Index of row whose bottom edge is being dragged for resize, or usize::MAX for global resize.
     row_resize: Option<usize>,
     row_resize_start_y: f32,
@@ -18,6 +22,10 @@ pub struct TableView {
     header_bottom_y_last: f32,
     /// Column being renamed via double-click on header (col_index, buffer).
     renaming_col: Option<(usize, String)>,
+    /// Column anchor for header drag-select (col index where drag started).
+    col_drag_anchor: Option<usize>,
+    /// Row anchor for gutter drag-select (display row index where drag started).
+    row_drag_anchor: Option<usize>,
     /// Bounding rect of all visible selected cells — accumulated each frame for the dashed border.
     sel_rect: Option<egui::Rect>,
     /// Marching-ants dash phase offset, advanced each frame while a selection is active.
@@ -240,6 +248,8 @@ impl TableView {
     pub fn new() -> Self {
         Self {
             editing: None,
+            cell_editor_width: 300.0,
+            save_requested: false,
             row_resize: None,
             row_resize_start_y: 0.0,
             row_resize_start_h: 0.0,
@@ -247,6 +257,8 @@ impl TableView {
             col_resize_start_w: 0.0,
             header_bottom_y_last: 0.0,
             renaming_col: None,
+            col_drag_anchor: None,
+            row_drag_anchor: None,
             sel_rect: None,
             dash_offset: 0.0,
             v_scroll_y: 0.0,
@@ -260,6 +272,10 @@ impl TableView {
             h_drag: None,
             h_alpha: 0.0,
         }
+    }
+
+    pub fn is_resizing(&self) -> bool {
+        self.col_resize.is_some() || self.row_resize.is_some()
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, state: &mut AppState, ctx: &egui::Context) {
@@ -276,7 +292,7 @@ impl TableView {
         let scroll_w = scroll_spc.bar_width + scroll_spc.bar_inner_margin + scroll_spc.bar_outer_margin;
         let scroll_h = scroll_w; // use same thickness for both axes
         // Table fills the entire panel — scrollbars are overlaid on top (macOS style).
-        let table_rect = panel_rect;
+        let _table_rect = panel_rect;
         // Interaction zones for the overlay scrollbars (right strip and bottom strip).
         // The vertical bar starts below the sticky header so the thumb never overlaps it.
         let v_bar_top = if self.header_bottom_y_last > 0.0 {
@@ -288,8 +304,10 @@ impl TableView {
             egui::pos2(panel_rect.max.x - scroll_w, v_bar_top),
             egui::pos2(panel_rect.max.x, panel_rect.max.y - scroll_h),
         );
+        // Gutter width needed early for h_bar_rect.
+        let gutter_width_early = state.row_number_width();
         let h_bar_rect = egui::Rect::from_min_max(
-            egui::pos2(panel_rect.min.x, panel_rect.max.y - scroll_h),
+            egui::pos2(panel_rect.min.x + gutter_width_early, panel_rect.max.y - scroll_h),
             egui::pos2(panel_rect.max.x - scroll_w, panel_rect.max.y),
         );
         let v_content_h = self.v_content_h;
@@ -342,6 +360,11 @@ impl TableView {
         let row_count = state.display_row_count();
         let col_count = state.col_count();
         let gutter_width = state.row_number_width();
+        // Gutter is sticky — the scrollable area starts right of it.
+        let data_rect = egui::Rect::from_min_max(
+            egui::pos2(panel_rect.left() + gutter_width, panel_rect.top()),
+            panel_rect.max,
+        );
 
         let header_bg  = colors.gutter_bg;
         let gutter_bg  = colors.gutter_bg;
@@ -355,6 +378,7 @@ impl TableView {
         let border          = colors.border;
         let hover_row_color = colors.hover_row;
         let header_sep = border;
+        let gutter_sep = border;
 
         let header_enabled = state.header_row_enabled;
         let col_names: Vec<String> = if let Some(f) = state.file.as_ref() {
@@ -384,9 +408,8 @@ impl TableView {
             matches!(s.direction, crate::state::SortDirection::Asc)
         });
 
-        // Zero inter-cell spacing so columns are flush against each other.
-        let total_width: f32 = gutter_width
-            + (0..col_count).map(|c| state.column_width(c)).sum::<f32>()
+        // Content width covers only data columns — gutter is outside the scroll area.
+        let total_width: f32 = (0..col_count).map(|c| state.column_width(c)).sum::<f32>()
             + 8.0; // small right padding
 
 
@@ -398,8 +421,6 @@ impl TableView {
         let header_col_rects: std::cell::Cell<Vec<(egui::Rect, usize)>> = std::cell::Cell::new(Vec::new());
         // Which column's resize handle is hovered this frame (for overlay painting).
         let col_resize_hovered: std::cell::Cell<Option<usize>> = std::cell::Cell::new(None);
-        // Which row's resize handle is hovered this frame (propagated gutter→data cells).
-        let row_resize_hovered: std::cell::Cell<Option<usize>> = std::cell::Cell::new(None);
         // Selection rect accumulated during body rendering; drawn after .body().
         let sel_rect_acc    = std::cell::Cell::<Option<egui::Rect>>::new(None);
         let current_dash    = self.dash_offset;
@@ -425,8 +446,8 @@ impl TableView {
             None
         };
 
-        // Table renders in a rect that excludes the custom scrollbar column.
-        let mut table_ui = ui.new_child(egui::UiBuilder::new().max_rect(table_rect));
+        // Table renders in the data rect (gutter is sticky, painted separately).
+        let mut table_ui = ui.new_child(egui::UiBuilder::new().max_rect(data_rect));
 
         let mut h_sa = egui::ScrollArea::horizontal()
             .auto_shrink([false, false])
@@ -448,7 +469,6 @@ impl TableView {
                     .striped(false)
                     .resizable(false)
                     .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                    .column(Column::exact(gutter_width))
                     .min_scrolled_height(0.0)
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
 
@@ -464,15 +484,14 @@ impl TableView {
                 // ── Header ──
                 let body_out = table
             .header(30.0, |mut header| {
-                header.col(|ui| {
-                    let rect = ui.max_rect();
-                    ui.painter().rect_filled(rect, 0.0, header_bg);
-                    header_bottom_y.set(rect.bottom());
-                    if rect.left() < header_left_x.get() { header_left_x.set(rect.left()); }
-                });
                 for (col_idx, name) in col_names.iter().enumerate() {
                     header.col(|ui| {
                         let rect = ui.max_rect();
+                        // Capture bottom Y and leftmost X from the first column.
+                        if col_idx == 0 {
+                            header_bottom_y.set(rect.bottom());
+                            if rect.left() < header_left_x.get() { header_left_x.set(rect.left()); }
+                        }
                         // Capture rect for the header overlay repaint.
                         { let mut v = header_col_rects.take(); v.push((rect, col_idx)); header_col_rects.set(v); }
                         // Highlight header when the column is selected.
@@ -521,7 +540,36 @@ impl TableView {
                                 rect.min,
                                 egui::pos2(rect.max.x - 5.0, rect.max.y),
                             );
-                            let resp = ui.interact(click_rect, hdr_id, egui::Sense::click());
+                            let resp = ui.interact(click_rect, hdr_id, egui::Sense::click_and_drag());
+
+                            // Drag-select columns.
+                            if resp.drag_started() {
+                                if let Some((er, ec, ev)) = self.editing.take() {
+                                    commit_edit(state, er, ec, ev);
+                                }
+                                self.col_drag_anchor = Some(col_idx);
+                                state.selection_type = Some(SelectionType::Column);
+                                state.selected_columns = vec![col_idx];
+                                state.selected_rows.clear();
+                                state.selection_anchor = None;
+                                state.selection_focus = None;
+                            }
+                            if self.col_drag_anchor.is_some()
+                                && ctx.input(|i| i.pointer.button_down(egui::PointerButton::Primary))
+                            {
+                                if let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) {
+                                    if click_rect.x_range().contains(pos.x) {
+                                        let anchor = self.col_drag_anchor.unwrap();
+                                        let lo = anchor.min(col_idx);
+                                        let hi = anchor.max(col_idx);
+                                        state.selected_columns = (lo..=hi).collect();
+                                        state.selection_type = Some(SelectionType::Column);
+                                    }
+                                }
+                            }
+                            if resp.drag_stopped() {
+                                self.col_drag_anchor = None;
+                            }
 
                             // Text label — leave room for sort icon on the right.
                             let label_max_x = if is_sorted_here { rect.right() - 20.0 } else { rect.right() - 4.0 };
@@ -602,13 +650,13 @@ impl TableView {
                                 ui.separator();
                                 if col_idx > 0 {
                                     if icon_menu_item(ui, "chevron-left", "Move Left", ic, tc, false).clicked() {
-                                        move_column(state, col_idx, col_idx - 1);
+                                        move_selected_columns(state, col_idx, -1, col_count);
                                         ui.close();
                                     }
                                 }
                                 if col_idx + 1 < col_count {
                                     if icon_menu_item(ui, "chevron-right", "Move Right", ic, tc, false).clicked() {
-                                        move_column(state, col_idx, col_idx + 1);
+                                        move_selected_columns(state, col_idx, 1, col_count);
                                         ui.close();
                                     }
                                 }
@@ -637,7 +685,7 @@ impl TableView {
                             rect.max,
                         );
                         let ch_id = egui::Id::new(("col_resize_handle", col_idx as u64));
-                        let handle_resp = ui.interact(handle_rect, ch_id, egui::Sense::drag());
+                        let handle_resp = ui.interact(handle_rect, ch_id, egui::Sense::click_and_drag());
                         let handle_active = handle_resp.hovered()
                             || handle_resp.dragged()
                             || self.col_resize == Some(col_idx);
@@ -659,6 +707,38 @@ impl TableView {
                         if handle_resp.drag_stopped() {
                             self.col_resize = None;
                         }
+                        // Double-click the resize handle → auto-fit width to content.
+                        if handle_resp.double_clicked() {
+                            let font_id = egui::FontId::proportional(state.font_size);
+                            // Minimum: the column header name.
+                            let col_label = col_name_for_display(state, col_idx);
+                            let mut best_w = ui.fonts(|f| {
+                                f.layout_no_wrap(col_label, font_id.clone(), egui::Color32::WHITE).size().x
+                            }) + 28.0; // header padding + resize-handle zone
+
+                            // Scan rows: load uncached ones on the fly (with a cap for large files).
+                            let total = state.display_row_count();
+                            let scan_limit = total.min(2000);
+                            for display_row in 0..scan_limit {
+                                // Only read from disk if not already cached.
+                                if let Some(ar) = state.display_row_to_actual_row(display_row) {
+                                    if !state.row_cache.contains_key(&ar) {
+                                        load_row(state, display_row);
+                                    }
+                                }
+                                let Some(val) = state.get_display_cell(display_row, col_idx)
+                                    else { continue };
+                                if val.is_empty() { continue; }
+                                let w = ui.fonts(|f| {
+                                    f.layout_no_wrap(val, font_id.clone(), egui::Color32::WHITE).size().x
+                                }) + 12.0; // cell l+r padding
+                                if w > best_w { best_w = w; }
+                            }
+
+                            state.column_widths.insert(col_idx, best_w.max(40.0));
+                            state.invalidate_col_layout();
+                            self.save_requested = true;
+                        }
                     });
                 }
             })
@@ -670,155 +750,10 @@ impl TableView {
                     .collect();
                 body.heterogeneous_rows(heights.into_iter(), |mut row| {
                     let display_row = row.index();
-                    let row_h = state.row_height_for(display_row);
+                    let _row_h = state.row_height_for(display_row);
 
                     let row_sel = state.selection_type == Some(SelectionType::Row)
                         && state.selected_rows.contains(&display_row);
-
-                    // Per-row hover state shared across all cells in this row.
-                    let row_hovered = std::cell::Cell::new(false);
-
-                    // ── Gutter cell ──
-                    row.col(|ui| {
-                        // Reset per-row resize-hover state at the start of each gutter cell.
-                        row_resize_hovered.set(None);
-                        let rect = ui.max_rect();
-                        // Detect hover by pointer Y falling within the row's Y band.
-                        if state.row_highlight_on_hover && !row_sel {
-                            let is_hov = ui.input(|i| {
-                                i.pointer.hover_pos().map(|p| rect.y_range().contains(p.y)).unwrap_or(false)
-                            });
-                            row_hovered.set(is_hov);
-                        }
-                        let bg = if row_sel { sel_color }
-                                 else if row_hovered.get() { hover_row_color }
-                                 else { gutter_bg };
-                        ui.painter().rect_filled(rect, 0.0, bg);
-
-                        // Right border separating gutter from data columns.
-                        // Highlight in accent when this row is within the cell selection range.
-                        let right_border_color = cell_sel_range
-                            .map(|(min_r, max_r, _, _)| display_row >= min_r && display_row <= max_r)
-                            .map(|in_range| if in_range { accent } else { border })
-                            .unwrap_or(border);
-                        ui.painter().rect_filled(
-                            egui::Rect::from_min_max(
-                                egui::pos2(rect.max.x - 1.0, rect.min.y),
-                                rect.max,
-                            ),
-                            0.0,
-                            right_border_color,
-                        );
-
-                        // Row number
-                        let num_rect = egui::Rect::from_min_max(
-                            rect.min,
-                            egui::pos2(rect.max.x - 1.0, rect.max.y - 4.0),
-                        );
-                        ui.painter().text(
-                            num_rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            (display_row + 1).to_string(),
-                            egui::FontId::monospace((state.font_size - 2.0).max(8.0)),
-                            line_num,
-                        );
-
-                        // Row-select click (top 80% of gutter)
-                        let click_rect = egui::Rect::from_min_max(
-                            rect.min,
-                            egui::pos2(rect.max.x, rect.min.y + row_h * 0.8),
-                        );
-                        let resp = ui.allocate_rect(click_rect, egui::Sense::click());
-                        if resp.clicked() {
-                            if let Some((er, ec, ev)) = self.editing.take() {
-                                commit_edit(state, er, ec, ev);
-                            }
-                            let shift = ctx.input(|i| i.modifiers.shift);
-                            state.selection_type = Some(SelectionType::Row);
-                            if !shift { state.selected_rows.clear(); state.selected_columns.clear(); }
-                            if !state.selected_rows.contains(&display_row) {
-                                state.selected_rows.push(display_row);
-                            }
-                        }
-                        // Right-click context menu on row gutter.
-                        // Use actual_row (row_order index) so operations are correct even
-                        // when header_row_enabled=false adds a synthetic header at display_row 0.
-                        let actual_row_for_ctx = state.display_row_to_actual_row(display_row)
-                            .unwrap_or(display_row);
-                        let total_rows_ctx = row_count;
-                        resp.context_menu(|ui| {
-                            ui.set_min_width(130.0);
-                            ui.set_max_width(150.0);
-                            let ic = colors.text_secondary;
-                            let tc = colors.text_primary;
-                            if icon_menu_item(ui, "insert-row-above", "Insert Row Above", ic, tc, false).clicked() {
-                                insert_row(state, actual_row_for_ctx);
-                                ui.close();
-                            }
-                            if icon_menu_item(ui, "insert-row-below", "Insert Row Below", ic, tc, false).clicked() {
-                                insert_row(state, actual_row_for_ctx + 1);
-                                ui.close();
-                            }
-                            ui.separator();
-                            if actual_row_for_ctx > 0 {
-                                if icon_menu_item(ui, "chevron-up", "Move Up", ic, tc, false).clicked() {
-                                    move_row(state, actual_row_for_ctx, actual_row_for_ctx - 1);
-                                    ui.close();
-                                }
-                            }
-                            if display_row + 1 < total_rows_ctx {
-                                if icon_menu_item(ui, "chevron-down", "Move Down", ic, tc, false).clicked() {
-                                    move_row(state, actual_row_for_ctx, actual_row_for_ctx + 1);
-                                    ui.close();
-                                }
-                            }
-                            ui.separator();
-                            let danger = colors.danger;
-                            if icon_menu_item(ui, "delete-row", "Delete Row", danger, danger, false).clicked() {
-                                delete_row(state, actual_row_for_ctx);
-                                ui.close();
-                            }
-                        });
-
-                        // Resize handle (bottom 4px of gutter)
-                        let handle_rect = egui::Rect::from_min_max(
-                            egui::pos2(rect.min.x, rect.max.y - 4.0),
-                            rect.max,
-                        );
-                        let handle_resp = ui.allocate_rect(handle_rect, egui::Sense::drag());
-                        let row_h_active = handle_resp.hovered() || self.row_resize == Some(display_row);
-                        if row_h_active {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
-                            row_resize_hovered.set(Some(display_row));
-                        }
-                        // Always draw 1px bottom line (accent when active, border otherwise) —
-                        // consistent with the column resize handle's visual weight.
-                        let bottom_line_color = if row_h_active { accent } else { border };
-                        let line_rect = egui::Rect::from_min_max(
-                            egui::pos2(handle_rect.min.x, handle_rect.max.y - 1.0),
-                            handle_rect.max,
-                        );
-                        ui.painter().rect_filled(line_rect, 0.0, bottom_line_color);
-                        if handle_resp.drag_started() {
-                            self.row_resize = Some(display_row);
-                            self.row_resize_start_y = handle_resp.interact_pointer_pos()
-                                .map(|p| p.y)
-                                .unwrap_or(0.0);
-                            self.row_resize_start_h = row_h;
-                        }
-                        if handle_resp.dragged() {
-                            if self.row_resize == Some(display_row) {
-                                let dy = handle_resp.drag_delta().y;
-                                let new_h = (self.row_resize_start_h + dy).max(16.0);
-                                self.row_resize_start_h = new_h;
-                                state.row_heights.insert(display_row, new_h);
-                                state.invalidate_row_layout();
-                            }
-                        }
-                        if handle_resp.drag_stopped() {
-                            self.row_resize = None;
-                        }
-                    });
 
                     // ── Data cells ──
                     for col_idx in 0..col_count {
@@ -835,17 +770,33 @@ impl TableView {
                                 .map(|f| f.edits.contains_key(&(display_row, col_idx)))
                                 .unwrap_or(false);
 
+                            let row_hov = state.row_highlight_on_hover && !row_sel
+                                && ctx.input(|i| i.pointer.hover_pos()
+                                    .map(|p| ui.max_rect().y_range().contains(p.y) && panel_rect.contains(p))
+                                    .unwrap_or(false));
                             let bg = if cell_sel || row_sel { sel_color }
-                                     else if row_hovered.get() { hover_row_color }
+                                     else if row_hov { hover_row_color }
                                      else if has_edit { edit_color }
                                      else { surf };
+
+                            let col_resize_line = self.col_resize == Some(col_idx);
 
                             if is_editing {
                                 // In-place editing: same background and border as a normal cell.
                                 let edit_rect = ui.max_rect();
                                 ui.painter().rect_filled(edit_rect, 0.0, bg);
-                                let bottom_color = if row_resize_hovered.get() == Some(display_row) { accent } else { border };
+                                let bottom_color = if self.row_resize == Some(display_row) { accent } else { border };
                                 paint_bottom_border(ui, edit_rect, bottom_color);
+                                if col_resize_line {
+                                    ui.painter().rect_filled(
+                                        egui::Rect::from_min_max(
+                                            egui::pos2(edit_rect.right() - 1.0, edit_rect.min.y),
+                                            edit_rect.max,
+                                        ),
+                                        0.0,
+                                        accent,
+                                    );
+                                }
                                 // Restore spacing so the TextEdit renders at normal height.
                                 ui.spacing_mut().item_spacing = egui::vec2(4.0, 2.0);
                                 let desired_w = ui.available_width() - 4.0;
@@ -910,11 +861,25 @@ impl TableView {
 
                                 // Paint after interaction registration.
                                 ui.painter().rect_filled(resp.rect, 0.0, bg);
-                                let bottom_color = if row_resize_hovered.get() == Some(display_row) { accent } else { border };
+                                let bottom_color = if self.row_resize == Some(display_row) { accent } else { border };
                                 paint_bottom_border(ui, resp.rect, bottom_color);
+                                if col_resize_line {
+                                    ui.painter().rect_filled(
+                                        egui::Rect::from_min_max(
+                                            egui::pos2(resp.rect.right() - 1.0, resp.rect.min.y),
+                                            resp.rect.max,
+                                        ),
+                                        0.0,
+                                        accent,
+                                    );
+                                }
                                 let _ = is_cursor;
                                 let value = get_cell(state, display_row, col_idx);
-                                ui.painter().text(
+                                let cell_clip = egui::Rect::from_min_max(
+                                    egui::pos2(resp.rect.left() + 4.0, resp.rect.min.y),
+                                    egui::pos2(resp.rect.right() - 4.0, resp.rect.max.y),
+                                );
+                                ui.painter().with_clip_rect(cell_clip).text(
                                     egui::pos2(resp.rect.left() + 4.0, resp.rect.center().y),
                                     egui::Align2::LEFT_CENTER,
                                     &value,
@@ -986,10 +951,15 @@ impl TableView {
                                 }
 
                                 resp.context_menu(|ui| {
-                                    ui.set_min_width(130.0);
-                                    ui.set_max_width(150.0);
+                                    ui.set_min_width(140.0);
+                                    ui.set_max_width(160.0);
                                     let ic = colors.text_secondary;
                                     let tc = colors.text_primary;
+                                    if icon_menu_item(ui, "pen", "Edit Cell", ic, tc, false).clicked() {
+                                        state.cell_editor = Some((display_row, col_idx, value.clone()));
+                                        ui.close();
+                                    }
+                                    ui.separator();
                                     if icon_menu_item(ui, "copy", "Copy", ic, tc, false).clicked() {
                                         ui.ctx().copy_text(value.clone());
                                         ui.close();
@@ -1028,8 +998,12 @@ impl TableView {
                 // Repaint the full header as a Foreground overlay so body rows
                 // scrolling into the header area are always covered.
                 let y = header_bottom_y.get();
-                let l = header_left_x.get();
-                let r = header_right_x.get();
+                // Extend l all the way to the panel left so the gutter header area is
+                // covered by the overlay (gutter is outside the scroll area now).
+                let l = panel_rect.left();
+                // Clamp r to the viewport's right edge so the header overlay never
+                // bleeds into the cell-editor sidebar (or any other right-side panel).
+                let r = header_right_x.get().min(ui.clip_rect().right());
                 if y > 0.0 && r > l {
                     let layer = egui::LayerId::new(egui::Order::Middle, egui::Id::new("header_overlay"));
                     let clip = ui.clip_rect();
@@ -1041,16 +1015,46 @@ impl TableView {
                     );
                     let painter = ui.ctx().layer_painter(layer).with_clip_rect(header_clip);
 
-                    // Fill the gutter and any gap left of the first column with header_bg.
-                    painter.rect_filled(
-                        egui::Rect::from_min_max(egui::pos2(l, clip.min.y), egui::pos2(r, y)),
-                        0.0,
-                        header_bg,
-                    );
-
                     // Repaint each column's background and name on top.
+                    // Skip the column being renamed — its TextEdit must remain visible.
+                    let renaming_col = self.renaming_col.as_ref().map(|(c, _)| *c);
                     let col_rects = header_col_rects.take();
+
+                    // Find the renaming column's screen rect so we can punch a hole in
+                    // the blanket background fill, letting the TextEdit show through.
+                    let renaming_rect = renaming_col.and_then(|rc| {
+                        col_rects.iter().find(|(_, ci)| *ci == rc).map(|(r, _)| *r)
+                    });
+
+                    // Fill header background, skipping the renaming column's area.
+                    if let Some(rr) = renaming_rect {
+                        // Left section (gutter + columns left of the rename field).
+                        if rr.left() > l {
+                            painter.rect_filled(
+                                egui::Rect::from_min_max(egui::pos2(l, clip.min.y), egui::pos2(rr.left(), y)),
+                                0.0,
+                                header_bg,
+                            );
+                        }
+                        // Right section (columns right of the rename field).
+                        if r > rr.right() {
+                            painter.rect_filled(
+                                egui::Rect::from_min_max(egui::pos2(rr.right(), clip.min.y), egui::pos2(r, y)),
+                                0.0,
+                                header_bg,
+                            );
+                        }
+                    } else {
+                        // No active rename (or column not visible) — fill everything.
+                        painter.rect_filled(
+                            egui::Rect::from_min_max(egui::pos2(l, clip.min.y), egui::pos2(r, y)),
+                            0.0,
+                            header_bg,
+                        );
+                    }
+
                     for (rect, col_idx) in &col_rects {
+                        if renaming_col == Some(*col_idx) { continue; }
                         let col_selected = state.selection_type == Some(SelectionType::Column)
                             && state.selected_columns.contains(col_idx);
                         painter.rect_filled(*rect, 0.0, if col_selected { sel_color } else { header_bg });
@@ -1065,6 +1069,18 @@ impl TableView {
                                 );
                             }
                         }
+                    }
+
+                    // Gutter separator — 1px at the left edge of the first data column header.
+                    if let Some((first_rect, _)) = col_rects.first() {
+                        painter.rect_filled(
+                            egui::Rect::from_min_max(
+                                first_rect.min,
+                                egui::pos2(first_rect.left() + 1.0, y),
+                            ),
+                            0.0,
+                            gutter_sep,
+                        );
                     }
 
                     // Right-edge resize border on each column header.
@@ -1285,6 +1301,243 @@ impl TableView {
         }
 
 
+        // ── Sticky gutter overlay ──
+        // The gutter lives outside the horizontal scroll area, so it never scrolls away.
+        // We paint it and register interactions after the data table renders so it
+        // appears on top of any data cell that might overlap its screen area.
+        {
+            let v_scroll   = self.v_scroll_y;           // previous-frame scroll (1-frame lag is imperceptible)
+            let header_h   = self.header_bottom_y_last.max(30.0);
+            let gutter_rect = egui::Rect::from_min_max(
+                panel_rect.min,
+                egui::pos2(panel_rect.left() + gutter_width, panel_rect.max.y),
+            );
+            let body_rect  = egui::Rect::from_min_max(
+                egui::pos2(panel_rect.left(), panel_rect.top() + header_h),
+                egui::pos2(panel_rect.left() + gutter_width, panel_rect.max.y),
+            );
+            let painter = ui.painter().with_clip_rect(gutter_rect);
+
+            state.ensure_row_layout();
+            let body_h   = body_rect.height();
+            let first_row = state.row_at_y(v_scroll, row_count);
+            let last_row  = state.row_at_y((v_scroll + body_h + state.row_height).min(state.row_layout.total_height), row_count)
+                .min(row_count.saturating_sub(1));
+
+            for display_row in first_row..=last_row {
+                let row_h    = state.row_height_for(display_row);
+                let screen_y = body_rect.top() + state.row_top(display_row) - v_scroll;
+                if screen_y >= body_rect.bottom() { break; }
+                if screen_y + row_h <= body_rect.top() { continue; }
+
+                let cell_rect = egui::Rect::from_min_size(
+                    egui::pos2(panel_rect.left(), screen_y),
+                    egui::vec2(gutter_width, row_h),
+                );
+
+                let row_sel = state.selection_type == Some(SelectionType::Row)
+                    && state.selected_rows.contains(&display_row);
+                let is_hov  = state.row_highlight_on_hover && !row_sel
+                    && ctx.input(|i| i.pointer.hover_pos()
+                        .map(|p| cell_rect.y_range().contains(p.y) && panel_rect.contains(p))
+                        .unwrap_or(false));
+                let bg = if row_sel { sel_color }
+                         else if is_hov { hover_row_color }
+                         else { gutter_bg };
+
+                // Background
+                painter.rect_filled(cell_rect, 0.0, bg);
+
+
+                // Row number
+                let num_rect = egui::Rect::from_min_max(
+                    cell_rect.min,
+                    egui::pos2(cell_rect.max.x - 1.0, cell_rect.max.y - 4.0),
+                );
+                painter.text(
+                    num_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    (display_row + 1).to_string(),
+                    egui::FontId::monospace((state.font_size - 2.0).max(8.0)),
+                    line_num,
+                );
+
+                // Bottom border — check handle hover directly so it's always current.
+                let handle_rect_for_border = egui::Rect::from_min_max(
+                    egui::pos2(cell_rect.min.x, cell_rect.max.y - 4.0),
+                    cell_rect.max,
+                ).intersect(body_rect);
+                let resize_active = self.row_resize == Some(display_row)
+                    || ctx.input(|i| i.pointer.hover_pos()
+                        .map(|p| handle_rect_for_border.contains(p))
+                        .unwrap_or(false));
+                painter.rect_filled(
+                    egui::Rect::from_min_max(
+                        egui::pos2(cell_rect.min.x, cell_rect.max.y - 1.0),
+                        cell_rect.max,
+                    ),
+                    0.0,
+                    if resize_active { accent } else { border },
+                );
+
+                // ── Row-select click (upper 80% of cell) ──
+                let click_rect = egui::Rect::from_min_max(
+                    cell_rect.min,
+                    egui::pos2(cell_rect.max.x, cell_rect.min.y + row_h * 0.8),
+                ).intersect(body_rect);
+                let click_resp = ui.interact(
+                    click_rect,
+                    egui::Id::new(("gutter_click", display_row as u64)),
+                    egui::Sense::click_and_drag(),
+                );
+                // Drag-select rows.
+                if click_resp.drag_started() {
+                    if let Some((er, ec, ev)) = self.editing.take() {
+                        commit_edit(state, er, ec, ev);
+                    }
+                    self.row_drag_anchor = Some(display_row);
+                    state.selection_type = Some(SelectionType::Row);
+                    state.selected_rows = vec![display_row];
+                    state.selected_columns.clear();
+                    state.selection_anchor = None;
+                    state.selection_focus = None;
+                }
+                if self.row_drag_anchor.is_some()
+                    && ctx.input(|i| i.pointer.button_down(egui::PointerButton::Primary))
+                {
+                    if let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) {
+                        if cell_rect.y_range().contains(pos.y) {
+                            let anchor = self.row_drag_anchor.unwrap();
+                            let lo = anchor.min(display_row);
+                            let hi = anchor.max(display_row);
+                            state.selected_rows = (lo..=hi).collect();
+                            state.selection_type = Some(SelectionType::Row);
+                        }
+                    }
+                }
+                if click_resp.drag_stopped() {
+                    self.row_drag_anchor = None;
+                }
+                if click_resp.clicked() {
+                    if let Some((er, ec, ev)) = self.editing.take() {
+                        commit_edit(state, er, ec, ev);
+                    }
+                    let shift = ctx.input(|i| i.modifiers.shift);
+                    state.selection_type = Some(SelectionType::Row);
+                    if !shift { state.selected_rows.clear(); state.selected_columns.clear(); }
+                    if !state.selected_rows.contains(&display_row) {
+                        state.selected_rows.push(display_row);
+                    }
+                }
+
+                // Right-click context menu
+                let actual_row_for_ctx = state.display_row_to_actual_row(display_row)
+                    .unwrap_or(display_row);
+                let total_rows_ctx = row_count;
+                click_resp.context_menu(|ui| {
+                    ui.set_min_width(130.0);
+                    ui.set_max_width(150.0);
+                    let ic = colors.text_secondary;
+                    let tc = colors.text_primary;
+                    if icon_menu_item(ui, "insert-row-above", "Insert Row Above", ic, tc, false).clicked() {
+                        insert_row(state, actual_row_for_ctx);
+                        ui.close();
+                    }
+                    if icon_menu_item(ui, "insert-row-below", "Insert Row Below", ic, tc, false).clicked() {
+                        insert_row(state, actual_row_for_ctx + 1);
+                        ui.close();
+                    }
+                    ui.separator();
+                    if actual_row_for_ctx > 0 {
+                        if icon_menu_item(ui, "chevron-up", "Move Up", ic, tc, false).clicked() {
+                            move_selected_rows(state, display_row, -1, total_rows_ctx);
+                            ui.close();
+                        }
+                    }
+                    if display_row + 1 < total_rows_ctx {
+                        if icon_menu_item(ui, "chevron-down", "Move Down", ic, tc, false).clicked() {
+                            move_selected_rows(state, display_row, 1, total_rows_ctx);
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    let danger = colors.danger;
+                    if icon_menu_item(ui, "delete-row", "Delete Row", danger, danger, false).clicked() {
+                        delete_row(state, actual_row_for_ctx);
+                        ui.close();
+                    }
+                });
+
+                // ── Row-resize handle (bottom 4px) ──
+                let handle_rect = egui::Rect::from_min_max(
+                    egui::pos2(cell_rect.min.x, cell_rect.max.y - 4.0),
+                    cell_rect.max,
+                ).intersect(body_rect);
+                let handle_resp = ui.interact(
+                    handle_rect,
+                    egui::Id::new(("gutter_resize", display_row as u64)),
+                    egui::Sense::click_and_drag(),
+                );
+                if handle_resp.hovered() || handle_resp.dragged() || resize_active {
+                    ctx.set_cursor_icon(egui::CursorIcon::ResizeVertical);
+                }
+                if handle_resp.drag_started() {
+                    self.row_resize = Some(display_row);
+                    self.row_resize_start_y = handle_resp.interact_pointer_pos()
+                        .map(|p| p.y).unwrap_or(0.0);
+                    self.row_resize_start_h = row_h;
+                }
+                if handle_resp.dragged() && self.row_resize == Some(display_row) {
+                    let dy = handle_resp.drag_delta().y;
+                    let new_h = (self.row_resize_start_h + dy).max(16.0);
+                    self.row_resize_start_h = new_h;
+                    state.row_heights.insert(display_row, new_h);
+                    state.invalidate_row_layout();
+                }
+                if handle_resp.drag_stopped() {
+                    self.row_resize = None;
+                }
+                // Double-click the resize handle → auto-fit height to cell content.
+                if handle_resp.double_clicked() {
+                    // Ensure this row is in cache.
+                    if let Some(ar) = state.display_row_to_actual_row(display_row) {
+                        if !state.row_cache.contains_key(&ar) {
+                            load_row(state, display_row);
+                        }
+                    }
+                    let mut max_lines = 1usize;
+                    for c in 0..col_count {
+                        if let Some(val) = state.get_display_cell(display_row, c) {
+                            let lines = val.lines().count().max(1);
+                            if lines > max_lines { max_lines = lines; }
+                        }
+                    }
+                    if max_lines <= 1 {
+                        // Single-line content: reset to default height.
+                        state.row_heights.remove(&display_row);
+                    } else {
+                        let line_h = state.font_size + 4.0;
+                        let new_h = (max_lines as f32 * line_h + 8.0).max(state.row_height);
+                        state.row_heights.insert(display_row, new_h);
+                    }
+                    state.invalidate_row_layout();
+                    self.save_requested = true;
+                }
+            }
+
+        }
+
+        // Gutter separator — 1px line at the left edge of the first data column.
+        let sep_x = panel_rect.left() + gutter_width;
+        ui.painter().rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(sep_x, panel_rect.min.y),
+                egui::pos2(sep_x + 1.0, panel_rect.max.y),
+            ),
+            0.0,
+            gutter_sep,
+        );
+
         // Sync sel_rect and advance the dash animation for the next frame.
         self.sel_rect = sel_rect_acc.get();
         if self.sel_rect.is_some() && !is_single_cell {
@@ -1310,6 +1563,8 @@ impl TableView {
         }
 
         if self.editing.is_some() { return; }
+        // While a column rename TextEdit is active, let it own all key events.
+        if self.renaming_col.is_some() { return; }
 
         let total_rows = state.display_row_count();
         let total_cols = state.col_count();
@@ -1662,6 +1917,70 @@ fn move_column(state: &mut AppState, from: usize, to: usize) {
     state.redo_stack.clear();
 }
 
+/// Move all selected columns left or right by one step.
+/// `delta` is -1 (left) or +1 (right). `ctx_col` is the right-clicked column.
+fn move_selected_columns(state: &mut AppState, ctx_col: usize, delta: i32, col_count: usize) {
+    let cols: Vec<usize> = if state.selected_columns.contains(&ctx_col) && !state.selected_columns.is_empty() {
+        let mut v = state.selected_columns.clone();
+        v.sort_unstable();
+        v
+    } else {
+        vec![ctx_col]
+    };
+    if delta < 0 {
+        if cols[0] == 0 { return; }
+        for &c in &cols {
+            move_column_impl(state, c, (c as i32 + delta) as usize);
+            state.undo_stack.push(EditAction::MoveColumn { from_col: c, to_col: (c as i32 + delta) as usize });
+        }
+    } else {
+        if *cols.last().unwrap() + 1 >= col_count { return; }
+        for &c in cols.iter().rev() {
+            move_column_impl(state, c, (c as i32 + delta) as usize);
+            state.undo_stack.push(EditAction::MoveColumn { from_col: c, to_col: (c as i32 + delta) as usize });
+        }
+    }
+    state.redo_stack.clear();
+    for sel in state.selected_columns.iter_mut() {
+        if cols.contains(sel) {
+            *sel = (*sel as i32 + delta) as usize;
+        }
+    }
+}
+
+/// Move all selected rows up or down by one step.
+/// `delta` is -1 (up) or +1 (down). `ctx_display_row` is the right-clicked display row.
+fn move_selected_rows(state: &mut AppState, ctx_display_row: usize, delta: i32, total_rows: usize) {
+    let rows: Vec<usize> = if state.selected_rows.contains(&ctx_display_row) && !state.selected_rows.is_empty() {
+        let mut v = state.selected_rows.clone();
+        v.sort_unstable();
+        v
+    } else {
+        vec![ctx_display_row]
+    };
+    if delta < 0 {
+        if rows[0] == 0 { return; }
+        for &dr in &rows {
+            let ar = state.display_row_to_actual_row(dr).unwrap_or(dr);
+            move_row_impl(state, ar, (ar as i32 + delta) as usize);
+            state.undo_stack.push(EditAction::MoveRow { from_row: ar, to_row: (ar as i32 + delta) as usize });
+        }
+    } else {
+        if *rows.last().unwrap() + 1 >= total_rows { return; }
+        for &dr in rows.iter().rev() {
+            let ar = state.display_row_to_actual_row(dr).unwrap_or(dr);
+            move_row_impl(state, ar, (ar as i32 + delta) as usize);
+            state.undo_stack.push(EditAction::MoveRow { from_row: ar, to_row: (ar as i32 + delta) as usize });
+        }
+    }
+    state.redo_stack.clear();
+    for sel in state.selected_rows.iter_mut() {
+        if rows.contains(sel) {
+            *sel = (*sel as i32 + delta) as usize;
+        }
+    }
+}
+
 /// Core swap logic for rows (no undo entry).
 fn move_row_impl(state: &mut AppState, from: usize, to: usize) {
     if from == to { return; }
@@ -1915,4 +2234,14 @@ fn icon_menu_item(
         },
     );
     response
+}
+
+/// Public wrapper used by app.rs to commit a sidebar cell edit.
+pub fn commit_edit_pub(state: &mut AppState, row: usize, display_col: usize, new_val: String) {
+    commit_edit(state, row, display_col, new_val);
+}
+
+/// Public wrapper for column display name — used by app.rs sidebar header.
+pub fn col_name_for_display_pub(state: &AppState, display_col: usize) -> String {
+    col_name_for_display(state, display_col)
 }
