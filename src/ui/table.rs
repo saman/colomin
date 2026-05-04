@@ -565,7 +565,7 @@ impl TableView {
                         } else {
                             let phys_col = state.display_to_physical_col(col_idx);
                             let is_sorted_here = sort_col == Some(phys_col);
-                            let color = if is_sorted_here { accent } else { text_sec };
+                            let color = if is_sorted_here { accent } else { text_pri };
                             // Reserve the right 5px for the resize handle so it gets
                             // exclusive hover/drag priority (no rect overlap).
                             let hdr_id = egui::Id::new(("hdr", col_idx as u64));
@@ -1099,7 +1099,7 @@ impl TableView {
                                     egui::Align2::LEFT_CENTER,
                                     name,
                                     egui::FontId::proportional(state.font_size - 1.0),
-                                    text_sec,
+                                    text_pri,
                                 );
                             }
                         }
