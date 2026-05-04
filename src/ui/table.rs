@@ -26,6 +26,8 @@ pub struct TableView {
     col_drag_anchor: Option<usize>,
     /// Row anchor for gutter drag-select (display row index where drag started).
     row_drag_anchor: Option<usize>,
+    /// Set to true by keyboard navigation; causes show() to scroll the focused cell into view.
+    scroll_to_focus: bool,
     /// Bounding rect of all visible selected cells — accumulated each frame for the dashed border.
     sel_rect: Option<egui::Rect>,
     /// Marching-ants dash phase offset, advanced each frame while a selection is active.
@@ -259,6 +261,7 @@ impl TableView {
             renaming_col: None,
             col_drag_anchor: None,
             row_drag_anchor: None,
+            scroll_to_focus: false,
             sel_rect: None,
             dash_offset: 0.0,
             v_scroll_y: 0.0,
@@ -446,15 +449,46 @@ impl TableView {
             None
         };
 
+        // ── Scroll focused cell into view after keyboard navigation ──
+        if self.scroll_to_focus {
+            self.scroll_to_focus = false;
+            if let Some(focus) = state.selection_focus {
+                state.ensure_row_layout();
+
+                // Vertical: scroll so the focused row is visible.
+                let row_top = state.row_top(focus.row);
+                let row_h   = state.row_height_for(focus.row);
+                let v_vp    = self.v_viewport_h;
+                if v_vp > 0.0 {
+                    if row_top < self.v_scroll_y {
+                        self.v_scroll_y = row_top;
+                    } else if row_top + row_h > self.v_scroll_y + v_vp {
+                        self.v_scroll_y = (row_top + row_h - v_vp).max(0.0);
+                    }
+                }
+
+                // Horizontal: scroll so the focused column is visible.
+                let col_left: f32 = (0..focus.col).map(|c| state.column_width(c)).sum();
+                let col_w = state.column_width(focus.col);
+                let h_vp  = (self.h_viewport_w - gutter_width).max(0.0);
+                if h_vp > 0.0 {
+                    if col_left < self.h_scroll_x {
+                        self.h_scroll_x = col_left;
+                    } else if col_left + col_w > self.h_scroll_x + h_vp {
+                        self.h_scroll_x = (col_left + col_w - h_vp).max(0.0);
+                    }
+                }
+            }
+        }
+
         // Table renders in the data rect (gutter is sticky, painted separately).
         let mut table_ui = ui.new_child(egui::UiBuilder::new().max_rect(data_rect));
 
         let mut h_sa = egui::ScrollArea::horizontal()
             .auto_shrink([false, false])
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
-        if let Some(dx) = h_drag_scroll_x {
-            h_sa = h_sa.scroll_offset(egui::vec2(dx, 0.0));
-        }
+        let h_scroll_target = h_drag_scroll_x.unwrap_or(self.h_scroll_x);
+        h_sa = h_sa.scroll_offset(egui::vec2(h_scroll_target, 0.0));
         let h_scroll_out = h_sa.show(&mut table_ui, |ui| {
                 ui.set_min_width(total_width);
                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
@@ -477,9 +511,8 @@ impl TableView {
                     table = table.column(Column::initial(w).at_least(40.0).resizable(false));
                 }
 
-                if let Some(dy) = drag_scroll_y {
-                    table = table.vertical_scroll_offset(dy);
-                }
+                let v_scroll_target = drag_scroll_y.unwrap_or(self.v_scroll_y);
+                table = table.vertical_scroll_offset(v_scroll_target);
 
                 // ── Header ──
                 let body_out = table
@@ -766,8 +799,9 @@ impl TableView {
                             let is_editing = self.editing.as_ref()
                                 .map(|(r, c, _)| *r == display_row && *c == col_idx)
                                 .unwrap_or(false);
-                            let has_edit = state.file.as_ref()
-                                .map(|f| f.edits.contains_key(&(display_row, col_idx)))
+                            let has_edit = state.display_row_to_actual_row(display_row)
+                                .and_then(|ar| state.file.as_ref()
+                                    .map(|f| f.edits.contains_key(&(ar, state.display_to_physical_col(col_idx)))))
                                 .unwrap_or(false);
 
                             let row_hov = state.row_highlight_on_hover && !row_sel
@@ -1106,7 +1140,9 @@ impl TableView {
                     );
 
                     // Bottom accent border on column headers within the cell selection range.
-                    if let Some((_, _, min_c, max_c)) = cell_sel_range {
+                    // Skip when the selection starts at row 0 — the blue cells immediately
+                    // below the header already make the selection obvious.
+                    if let Some((_, _, min_c, max_c)) = cell_sel_range.filter(|&(min_r, _, _, _)| min_r > 0) {
                         for (rect, col_idx) in &col_rects {
                             if *col_idx >= min_c && *col_idx <= max_c {
                                 painter.rect_filled(
@@ -1120,7 +1156,7 @@ impl TableView {
                             }
                         }
                     }
-                }
+                } // closes if y > 0.0 && r > l
 
                 // Marching-ants selection border drawn on Order::Middle so it
                 // sits on top of cells but below context menus and tooltips.
@@ -1537,6 +1573,28 @@ impl TableView {
             0.0,
             gutter_sep,
         );
+        // Accent override for rows inside the cell-selection range.
+        // Skip when the selection starts at col 0 — the blue cells flush against
+        // the gutter already make the selection obvious.
+        if let Some((min_r, max_r, _, _)) = cell_sel_range.filter(|&(_, _, min_c, _)| min_c > 0) {
+            let body_top = self.header_bottom_y_last.max(30.0) + panel_rect.top();
+            let v_scroll = self.v_scroll_y;
+            state.ensure_row_layout();
+            for sel_row in min_r..=max_r {
+                let row_h = state.row_height_for(sel_row);
+                let scr_y = body_top + state.row_top(sel_row) - v_scroll;
+                if scr_y >= panel_rect.max.y { break; }
+                if scr_y + row_h <= body_top { continue; }
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_max(
+                        egui::pos2(sep_x, scr_y.max(body_top)),
+                        egui::pos2(sep_x + 1.0, (scr_y + row_h).min(panel_rect.max.y)),
+                    ),
+                    0.0,
+                    accent,
+                );
+            }
+        }
 
         // Sync sel_rect and advance the dash animation for the next frame.
         self.sel_rect = sel_rect_acc.get();
@@ -1571,38 +1629,70 @@ impl TableView {
         if total_rows == 0 || total_cols == 0 { return; }
 
         let anchor = state.selection_anchor;
-        let cur_row = anchor.map(|a| a.row).unwrap_or(0);
-        let cur_col = anchor.map(|a| a.col).unwrap_or(0);
+        // Movement always starts from the FOCUS (tip of the selection), not the anchor.
+        // Using anchor here causes Shift+Arrow to stay stuck instead of extending.
+        let focus = state.selection_focus.or(anchor);
+        let cur_row = focus.map(|f| f.row).unwrap_or(0);
+        let cur_col = focus.map(|f| f.col).unwrap_or(0);
 
-        let (moved, new_row, new_col, shift, do_enter, do_escape, do_delete, do_undo, do_redo) =
+        let (moved, new_row, new_col, shift, do_enter, do_escape, do_delete, do_undo, do_redo, do_select_all) =
             ctx.input(|i| {
                 let shift = i.modifiers.shift;
+                let cmd   = i.modifiers.command;
                 let mut new_row = cur_row;
                 let mut new_col = cur_col;
                 let mut moved = false;
 
-                if i.key_pressed(egui::Key::ArrowUp)    && cur_row > 0           { new_row -= 1; moved = true; }
-                if i.key_pressed(egui::Key::ArrowDown)  && cur_row + 1 < total_rows { new_row += 1; moved = true; }
-                if i.key_pressed(egui::Key::ArrowLeft)  && cur_col > 0           { new_col -= 1; moved = true; }
-                if i.key_pressed(egui::Key::ArrowRight) && cur_col + 1 < total_cols { new_col += 1; moved = true; }
+                if i.key_pressed(egui::Key::ArrowUp) {
+                    new_row = if cmd { 0 } else if cur_row > 0 { cur_row - 1 } else { cur_row };
+                    if new_row != cur_row { moved = true; }
+                }
+                if i.key_pressed(egui::Key::ArrowDown) {
+                    new_row = if cmd { total_rows.saturating_sub(1) } else if cur_row + 1 < total_rows { cur_row + 1 } else { cur_row };
+                    if new_row != cur_row { moved = true; }
+                }
+                if i.key_pressed(egui::Key::ArrowLeft) {
+                    new_col = if cmd { 0 } else if cur_col > 0 { cur_col - 1 } else { cur_col };
+                    if new_col != cur_col { moved = true; }
+                }
+                if i.key_pressed(egui::Key::ArrowRight) {
+                    new_col = if cmd { total_cols.saturating_sub(1) } else if cur_col + 1 < total_cols { cur_col + 1 } else { cur_col };
+                    if new_col != cur_col { moved = true; }
+                }
 
-                let do_enter  = i.key_pressed(egui::Key::Enter);
-                let do_escape = i.key_pressed(egui::Key::Escape);
-                let do_delete = i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace);
-                let do_undo   = i.key_pressed(egui::Key::Z) && i.modifiers.command && !i.modifiers.shift;
-                let do_redo   = (i.key_pressed(egui::Key::Z) && i.modifiers.command && i.modifiers.shift)
-                             || (i.key_pressed(egui::Key::Y) && i.modifiers.command);
+                let do_enter      = i.key_pressed(egui::Key::Enter);
+                let do_escape     = i.key_pressed(egui::Key::Escape);
+                let do_delete     = i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace);
+                let do_undo       = i.key_pressed(egui::Key::Z) && cmd && !shift;
+                let do_redo       = (i.key_pressed(egui::Key::Z) && cmd && shift)
+                                 || (i.key_pressed(egui::Key::Y) && cmd);
+                let do_select_all = i.key_pressed(egui::Key::A) && cmd;
 
-                (moved, new_row, new_col, shift, do_enter, do_escape, do_delete, do_undo, do_redo)
+                (moved, new_row, new_col, shift, do_enter, do_escape, do_delete, do_undo, do_redo, do_select_all)
             });
 
         if moved {
-            let focus = CellCoord { row: new_row, col: new_col };
-            if !shift || anchor.is_none() { state.selection_anchor = Some(focus); }
-            state.selection_focus = Some(focus);
+            let new_focus = CellCoord { row: new_row, col: new_col };
+            if !shift || anchor.is_none() {
+                state.selection_anchor = Some(new_focus);
+            }
+            state.selection_focus = Some(new_focus);
             state.selection_type = Some(SelectionType::Cell);
             state.selected_rows.clear();
             state.selected_columns.clear();
+            self.scroll_to_focus = true;
+        }
+
+        if do_select_all {
+            if let Some((er, ec, ev)) = self.editing.take() {
+                commit_edit(state, er, ec, ev);
+            }
+            state.selection_type = Some(SelectionType::Cell);
+            state.selection_anchor = Some(CellCoord { row: 0, col: 0 });
+            state.selection_focus  = Some(CellCoord { row: total_rows - 1, col: total_cols - 1 });
+            state.selected_rows.clear();
+            state.selected_columns.clear();
+            self.scroll_to_focus = true;
         }
 
         if do_enter {
@@ -1655,27 +1745,33 @@ fn action_label(a: &EditAction) -> String {
     }
 }
 
-fn commit_edit(state: &mut AppState, row: usize, display_col: usize, new_val: String) {
+fn commit_edit(state: &mut AppState, display_row: usize, display_col: usize, new_val: String) {
+    // Translate display_row → actual_row. Display row 0 when header is off maps to None
+    // (it is the CSV header row shown as data); editing it is a no-op here.
+    let actual_row = match state.display_row_to_actual_row(display_row) {
+        Some(r) => r,
+        None => return,
+    };
     let physical_col = state.display_to_physical_col(display_col);
     let Some(ref mut file) = state.file else { return };
-    let old_had_edit = file.edits.contains_key(&(row, physical_col));
-    let old_value = file.edits.get(&(row, physical_col)).cloned()
-        .or_else(|| state.row_cache.get(&row).and_then(|r| r.get(physical_col).cloned()))
+    let old_had_edit = file.edits.contains_key(&(actual_row, physical_col));
+    let old_value = file.edits.get(&(actual_row, physical_col)).cloned()
+        .or_else(|| state.row_cache.get(&actual_row).and_then(|r| r.get(physical_col).cloned()))
         .unwrap_or_default();
 
-    if new_val == old_value && !old_had_edit { return; } // no-op
+    if new_val == old_value && !old_had_edit { return; }
 
-    crate::dlog!(Debug, "Edit", "commit row={} col={} (phys={}) len={}→{}",
-        row, display_col, physical_col, old_value.len(), new_val.len());
+    crate::dlog!(Debug, "Edit", "commit display_row={} actual_row={} col={} (phys={}) len={}→{}",
+        display_row, actual_row, display_col, physical_col, old_value.len(), new_val.len());
 
-    file.edits.insert((row, physical_col), new_val.clone());
-    if let Some(cached) = state.row_cache.get_mut(&row) {
+    file.edits.insert((actual_row, physical_col), new_val.clone());
+    if let Some(cached) = state.row_cache.get_mut(&actual_row) {
         if physical_col < cached.len() { cached[physical_col] = new_val.clone(); }
     }
     state.cache_version += 1;
 
     state.undo_stack.push(EditAction::CellEdit {
-        row,
+        row: actual_row, // stored as actual_row; display_row restored via actual_row_to_display_row on undo
         col: display_col,
         physical_col,
         old_had_edit,
@@ -1701,10 +1797,18 @@ fn delete_selection(state: &mut AppState) {
     let _t = crate::dspan!("Edit", "delete_selection");
     crate::dlog!(Info, "Edit", "delete rows={}..={} cols={}..={}",
         min_r, max_r, min_c, max_c);
+    // Precompute actual rows before the mutable file borrow.
+    let actual_rows: Vec<Option<usize>> = (min_r..=max_r)
+        .map(|r| state.display_row_to_actual_row(r))
+        .collect();
     let mut edits_batch = Vec::new();
     {
         let Some(ref mut file) = state.file else { return };
-        for r in min_r..=max_r {
+        for (idx, _r) in (min_r..=max_r).enumerate() {
+            let actual_r = match actual_rows[idx] {
+                Some(ar) => ar,
+                None => continue,
+            };
             for c in min_c..=max_c {
                 let physical_c = {
                     if let Some(ref order) = file.col_order {
@@ -1714,15 +1818,15 @@ fn delete_selection(state: &mut AppState) {
                         }
                     } else { c }
                 };
-                let old_had_edit = file.edits.contains_key(&(r, physical_c));
-                let old_value = file.edits.get(&(r, physical_c)).cloned()
-                    .or_else(|| state.row_cache.get(&r).and_then(|row| row.get(physical_c).cloned()))
+                let old_had_edit = file.edits.contains_key(&(actual_r, physical_c));
+                let old_value = file.edits.get(&(actual_r, physical_c)).cloned()
+                    .or_else(|| state.row_cache.get(&actual_r).and_then(|row| row.get(physical_c).cloned()))
                     .unwrap_or_default();
-                file.edits.insert((r, physical_c), String::new());
-                if let Some(row) = state.row_cache.get_mut(&r) {
+                file.edits.insert((actual_r, physical_c), String::new());
+                if let Some(row) = state.row_cache.get_mut(&actual_r) {
                     if physical_c < row.len() { row[physical_c] = String::new(); }
                 }
-                edits_batch.push(BatchEditEntry { row: r, col: c, physical_col: physical_c, old_had_edit, old_value, new_value: String::new() });
+                edits_batch.push(BatchEditEntry { row: actual_r, col: c, physical_col: physical_c, old_had_edit, old_value, new_value: String::new() });
             }
         }
     }
@@ -1740,15 +1844,25 @@ fn apply_paste(state: &mut AppState, text: &str) {
         anchor.row, anchor.col, text.len());
     let total_rows = state.display_row_count();
     let total_cols = state.col_count();
+    // Precompute actual rows before the mutable file borrow.
+    let lines: Vec<String> = text.split('\n').map(|l| l.trim_end_matches('\r').to_string()).collect();
+    let actual_rows_paste: Vec<Option<usize>> = (0..lines.len())
+        .map(|offset| {
+            let dr = anchor.row + offset;
+            if dr >= total_rows { None } else { state.display_row_to_actual_row(dr) }
+        })
+        .collect();
     let mut edits_batch: Vec<BatchEditEntry> = Vec::new();
     {
         let Some(ref mut file) = state.file else { return };
-        let lines: Vec<&str> = text.split('\n').collect();
         for (row_offset, line) in lines.iter().enumerate() {
-            let line = line.trim_end_matches('\r');
             if line.is_empty() && row_offset + 1 == lines.len() { break; }
             let display_row = anchor.row + row_offset;
             if display_row >= total_rows { break; }
+            let actual_row = match actual_rows_paste[row_offset] {
+                Some(ar) => ar,
+                None => continue,
+            };
             for (col_offset, cell_val) in line.split('\t').enumerate() {
                 let display_col = anchor.col + col_offset;
                 if display_col >= total_cols { break; }
@@ -1759,16 +1873,16 @@ fn apply_paste(state: &mut AppState, text: &str) {
                     },
                     None => display_col,
                 };
-                let old_had_edit = file.edits.contains_key(&(display_row, physical_col));
-                let old_value = file.edits.get(&(display_row, physical_col)).cloned()
-                    .or_else(|| state.row_cache.get(&display_row).and_then(|r| r.get(physical_col).cloned()))
+                let old_had_edit = file.edits.contains_key(&(actual_row, physical_col));
+                let old_value = file.edits.get(&(actual_row, physical_col)).cloned()
+                    .or_else(|| state.row_cache.get(&actual_row).and_then(|r| r.get(physical_col).cloned()))
                     .unwrap_or_default();
                 let new_value = cell_val.to_string();
-                file.edits.insert((display_row, physical_col), new_value.clone());
-                if let Some(row_data) = state.row_cache.get_mut(&display_row) {
+                file.edits.insert((actual_row, physical_col), new_value.clone());
+                if let Some(row_data) = state.row_cache.get_mut(&actual_row) {
                     if physical_col < row_data.len() { row_data[physical_col] = new_value.clone(); }
                 }
-                edits_batch.push(BatchEditEntry { row: display_row, col: display_col, physical_col, old_had_edit, old_value, new_value });
+                edits_batch.push(BatchEditEntry { row: actual_row, col: display_col, physical_col, old_had_edit, old_value, new_value });
             }
         }
     }
@@ -1796,7 +1910,8 @@ fn apply_undo(state: &mut AppState) {
             if let Some(cached) = state.row_cache.get_mut(row) {
                 if *physical_col < cached.len() { cached[*physical_col] = old_value.clone(); }
             }
-            sel = Some(CellCoord { row: *row, col: *col });
+            // row is actual_row; convert back to display_row for selection
+            sel = Some(CellCoord { row: state.actual_row_to_display_row(*row), col: *col });
         }
         EditAction::BatchCellEdit { edits } => {
             for e in edits {
@@ -1811,7 +1926,7 @@ fn apply_undo(state: &mut AppState) {
                     if e.physical_col < cached.len() { cached[e.physical_col] = e.old_value.clone(); }
                 }
             }
-            sel = edits.first().map(|e| CellCoord { row: e.row, col: e.col });
+            sel = edits.first().map(|e| CellCoord { row: state.actual_row_to_display_row(e.row), col: e.col });
         }
         EditAction::RenameColumn { col, old_name, .. } => {
             if let Some(ref mut file) = state.file {
@@ -1852,7 +1967,7 @@ fn apply_redo(state: &mut AppState) {
             if let Some(cached) = state.row_cache.get_mut(row) {
                 if *physical_col < cached.len() { cached[*physical_col] = new_value.clone(); }
             }
-            sel = Some(CellCoord { row: *row, col: *col });
+            sel = Some(CellCoord { row: state.actual_row_to_display_row(*row), col: *col });
         }
         EditAction::BatchCellEdit { edits } => {
             for e in edits {
@@ -1863,7 +1978,7 @@ fn apply_redo(state: &mut AppState) {
                     if e.physical_col < cached.len() { cached[e.physical_col] = e.new_value.clone(); }
                 }
             }
-            sel = edits.last().map(|e| CellCoord { row: e.row, col: e.col });
+            sel = edits.last().map(|e| CellCoord { row: state.actual_row_to_display_row(e.row), col: e.col });
         }
         EditAction::RenameColumn { col, new_name, .. } => {
             if let Some(ref mut file) = state.file {
@@ -1910,13 +2025,6 @@ fn move_column_impl(state: &mut AppState, from: usize, to: usize) {
 }
 
 /// Public entry: swap display columns `from` ↔ `to`, push undo entry.
-fn move_column(state: &mut AppState, from: usize, to: usize) {
-    if from == to { return; }
-    move_column_impl(state, from, to);
-    state.undo_stack.push(EditAction::MoveColumn { from_col: from, to_col: to });
-    state.redo_stack.clear();
-}
-
 /// Move all selected columns left or right by one step.
 /// `delta` is -1 (left) or +1 (right). `ctx_col` is the right-clicked column.
 fn move_selected_columns(state: &mut AppState, ctx_col: usize, delta: i32, col_count: usize) {
@@ -1951,13 +2059,32 @@ fn move_selected_columns(state: &mut AppState, ctx_col: usize, delta: i32, col_c
 /// Move all selected rows up or down by one step.
 /// `delta` is -1 (up) or +1 (down). `ctx_display_row` is the right-clicked display row.
 fn move_selected_rows(state: &mut AppState, ctx_display_row: usize, delta: i32, total_rows: usize) {
-    let rows: Vec<usize> = if state.selected_rows.contains(&ctx_display_row) && !state.selected_rows.is_empty() {
-        let mut v = state.selected_rows.clone();
-        v.sort_unstable();
-        v
-    } else {
-        vec![ctx_display_row]
-    };
+    let multi = state.selection_type == Some(SelectionType::Row)
+        && state.selected_rows.contains(&ctx_display_row)
+        && state.selected_rows.len() > 1;
+
+    if !multi {
+        // Single row — use the original move_row path, then follow with selection.
+        let ar = state.display_row_to_actual_row(ctx_display_row).unwrap_or(ctx_display_row);
+        if delta < 0 {
+            if ar == 0 { return; }
+            move_row(state, ar, ar - 1);
+        } else {
+            if ctx_display_row + 1 >= total_rows { return; }
+            move_row(state, ar, ar + 1);
+        }
+        for sel in state.selected_rows.iter_mut() {
+            if *sel == ctx_display_row {
+                *sel = (*sel as i32 + delta) as usize;
+            }
+        }
+        return;
+    }
+
+    // Multiple selected rows — move all as a group.
+    let mut rows = state.selected_rows.clone();
+    rows.sort_unstable();
+
     if delta < 0 {
         if rows[0] == 0 { return; }
         for &dr in &rows {
@@ -1966,7 +2093,7 @@ fn move_selected_rows(state: &mut AppState, ctx_display_row: usize, delta: i32, 
             state.undo_stack.push(EditAction::MoveRow { from_row: ar, to_row: (ar as i32 + delta) as usize });
         }
     } else {
-        if *rows.last().unwrap() + 1 >= total_rows { return; }
+        if rows.last().unwrap() + 1 >= total_rows { return; }
         for &dr in rows.iter().rev() {
             let ar = state.display_row_to_actual_row(dr).unwrap_or(dr);
             move_row_impl(state, ar, (ar as i32 + delta) as usize);
@@ -1975,9 +2102,7 @@ fn move_selected_rows(state: &mut AppState, ctx_display_row: usize, delta: i32, 
     }
     state.redo_stack.clear();
     for sel in state.selected_rows.iter_mut() {
-        if rows.contains(sel) {
-            *sel = (*sel as i32 + delta) as usize;
-        }
+        *sel = (*sel as i32 + delta) as usize;
     }
 }
 
