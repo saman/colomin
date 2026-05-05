@@ -20,6 +20,7 @@ struct TabState {
     table: TableView,
     loading: Option<LoadingHandle>,
     sorting_rx: Option<std::sync::mpsc::Receiver<Result<SortResult, String>>>,
+    searching_rx: Option<std::sync::mpsc::Receiver<Result<crate::csv_engine::types::SearchResult, String>>>,
     stats_rx: Option<std::sync::mpsc::Receiver<(String, crate::ui::stats::Stats)>>,
     was_resizing: bool,
 }
@@ -31,6 +32,7 @@ impl TabState {
             table: TableView::new(),
             loading: None,
             sorting_rx: None,
+            searching_rx: None,
             stats_rx: None,
             was_resizing: false,
         }
@@ -446,6 +448,20 @@ impl eframe::App for ColominApp {
             }
         }
 
+        // ── Poll background search ──
+        if let Some(rx) = &tab.searching_rx {
+            match rx.try_recv() {
+                Ok(Ok(result)) => {
+                    tab.state.apply_search_results(result.row_indices);
+                    tab.searching_rx = None;
+                    ctx.request_repaint();
+                }
+                Ok(Err(e)) => { eprintln!("Search error: {}", e); tab.searching_rx = None; }
+                Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint(),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => { tab.searching_rx = None; }
+            }
+        }
+
         // ── Kick off stats computation when selection changes ──
         {
             use crate::ui::stats as st;
@@ -521,6 +537,33 @@ impl eframe::App for ColominApp {
             }
         }
 
+        // ── Dispatch pending search to background thread ──
+        let tab = &mut self.tabs[self.active_tab];
+        if tab.searching_rx.is_none() {
+            if let Some(query) = tab.state.pending_search.take() {
+                if query.is_empty() {
+                    tab.state.search_results.clear();
+                    tab.state.search_results_set.clear();
+                    tab.state.search_cursor = 0;
+                } else if let Some(ref file) = tab.state.file {
+                    let path = file.file_path.clone();
+                    let row_offsets = file.row_offsets.clone();
+                    let edits = file.edits.clone();
+                    let col_count = file.metadata.columns.len();
+                    let delimiter = file.delimiter;
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    std::thread::spawn(move || {
+                        let result = crate::csv_engine::query::search_rows(
+                            &path, &row_offsets, &edits, &query, None, col_count, delimiter,
+                        );
+                        let _ = tx.send(result);
+                    });
+                    tab.searching_rx = Some(rx);
+                    ctx.request_repaint();
+                }
+            }
+        }
+
         // ── IPC: Finder "Open With" / second process ──
         let ipc_path: Option<String> = self.ipc_rx.as_ref().and_then(|rx| {
             let mut last = None;
@@ -586,6 +629,9 @@ impl eframe::App for ColominApp {
 
         let save_file = ctx.input(|i| i.key_pressed(egui::Key::S) && i.modifiers.command);
         if save_file { Self::handle_save_tab(tab); }
+
+        let search_shortcut = ctx.input(|i| i.key_pressed(egui::Key::F) && i.modifiers.command);
+        if search_shortcut { tab.state.show_search = true; }
 
         let cycle_theme = ctx.input(|i| {
             i.key_pressed(egui::Key::T) && i.modifiers.command && !i.modifiers.shift
@@ -977,6 +1023,131 @@ impl eframe::App for ColominApp {
             tab.state.clear_cache();
             tab.state.invalidate_row_layout();
             defaults.save();
+        }
+
+        // ── Search bar ──
+        let tab = &mut self.tabs[self.active_tab];
+        let mut search_close = false;
+        let mut search_nav: i32 = 0;
+        let mut search_query_changed = false;
+
+        if tab.state.show_search {
+            let theme = tab.state.current_theme();
+            let text_pri = theme.text_primary;
+            let text_sec = theme.text_secondary;
+            let prev_query = tab.state.search_query.clone();
+            let field_id = egui::Id::new("search_bar_input");
+            egui::TopBottomPanel::bottom("search_bar")
+                .exact_height(36.0)
+                .frame(egui::Frame::NONE.fill(theme.status_bar_bg))
+                .show(ctx, |ui| {
+                    ui.horizontal_centered(|ui| {
+                        ui.add_space(10.0);
+
+                        // Search icon (non-interactive leading glyph)
+                        let icon_sz = egui::vec2(15.0, 15.0);
+                        let (search_icon_rect, _) = ui.allocate_exact_size(icon_sz, egui::Sense::hover());
+                        crate::ui::icons::icon("search", text_sec).paint_at(ui, search_icon_rect);
+                        ui.add_space(6.0);
+
+                        // Text field
+                        let te = egui::TextEdit::singleline(&mut tab.state.search_query)
+                            .id(field_id)
+                            .hint_text("Find in table…")
+                            .frame(false)
+                            .desired_width(200.0);
+                        let resp = ui.add(te);
+                        ctx.memory_mut(|m| {
+                            if m.focused() != Some(field_id) {
+                                m.request_focus(field_id);
+                            }
+                        });
+                        if tab.state.search_query != prev_query {
+                            search_query_changed = true;
+                        }
+                        if resp.has_focus() {
+                            if ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift) {
+                                search_nav = 1;
+                            }
+                            if ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.shift) {
+                                search_nav = -1;
+                            }
+                            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                search_close = true;
+                            }
+                        }
+
+                        ui.add_space(10.0);
+
+                        // Match count
+                        let match_text = if tab.state.search_query.is_empty() {
+                            String::new()
+                        } else if tab.state.search_results.is_empty() {
+                            "No matches".to_string()
+                        } else {
+                            format!("{} of {}", tab.state.search_cursor + 1, tab.state.search_results.len())
+                        };
+                        ui.label(egui::RichText::new(match_text).color(text_sec).size(12.0));
+
+                        ui.add_space(6.0);
+
+                        // ↑ prev button
+                        let (up_rect, up_resp) = ui.allocate_exact_size(icon_sz, egui::Sense::click());
+                        let up_color = if up_resp.hovered() { text_pri } else { text_sec };
+                        crate::ui::icons::icon("chevron-up", up_color).paint_at(ui, up_rect);
+                        if up_resp.clicked() { search_nav = -1; }
+
+                        ui.add_space(4.0);
+
+                        // ↓ next button
+                        let (dn_rect, dn_resp) = ui.allocate_exact_size(icon_sz, egui::Sense::click());
+                        let dn_color = if dn_resp.hovered() { text_pri } else { text_sec };
+                        crate::ui::icons::icon("chevron-down", dn_color).paint_at(ui, dn_rect);
+                        if dn_resp.clicked() { search_nav = 1; }
+
+                        ui.add_space(8.0);
+
+                        // ✕ close button
+                        let (x_rect, x_resp) = ui.allocate_exact_size(icon_sz, egui::Sense::click());
+                        let x_color = if x_resp.hovered() { text_pri } else { text_sec };
+                        crate::ui::icons::icon("x", x_color).paint_at(ui, x_rect);
+                        if x_resp.clicked() { search_close = true; }
+
+                        ui.add_space(10.0);
+                    });
+                });
+        }
+
+        let tab = &mut self.tabs[self.active_tab];
+        if search_close {
+            tab.state.show_search = false;
+            tab.state.search_query.clear();
+            tab.state.search_results.clear();
+            tab.state.search_results_set.clear();
+            tab.state.search_cursor = 0;
+        }
+        if search_query_changed {
+            tab.state.pending_search = Some(tab.state.search_query.clone());
+            tab.state.search_cursor = 0;
+        }
+        if search_nav != 0 && !tab.state.search_results.is_empty() {
+            let n = tab.state.search_results.len();
+            tab.state.search_cursor = if search_nav > 0 {
+                (tab.state.search_cursor + 1) % n
+            } else if tab.state.search_cursor == 0 {
+                n - 1
+            } else {
+                tab.state.search_cursor - 1
+            };
+            if let Some(actual_row) = tab.state.search_results.get(tab.state.search_cursor).copied() {
+                let display_row_count = tab.state.display_row_count();
+                for dr in 0..display_row_count {
+                    if tab.state.display_row_to_actual_row(dr) == Some(actual_row) {
+                        tab.state.search_scroll_to = Some(dr);
+                        break;
+                    }
+                }
+            }
         }
 
         // ── Cell editor sidebar ──

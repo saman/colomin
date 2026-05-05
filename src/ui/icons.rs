@@ -50,6 +50,7 @@ pub fn source(name: &str) -> egui::ImageSource<'static> {
         "copy"                 => entry!("bytes://copy.svg",                 "copy.svg"),
         "paste"                => entry!("bytes://paste.svg",                "paste.svg"),
         "search"               => entry!("bytes://search.svg",               "search.svg"),
+        "x"                    => entry!("bytes://x.svg",                    "x.svg"),
         "moon"                 => entry!("bytes://moon.svg",                 "moon.svg"),
         "sun"                  => entry!("bytes://sun.svg",                  "sun.svg"),
         "edit"                 => entry!("bytes://edit.svg",                 "edit.svg"),

@@ -19,6 +19,7 @@ pub struct ThemeColors {
     pub accent_subtle: Color32,
     pub edited: Color32,
     pub hover_row: Color32,
+    pub search_match: Color32,
     pub danger: Color32,
     pub status_bar_bg: Color32,
     pub gutter_bg: Color32,
@@ -189,6 +190,9 @@ fn parse_dtcg_theme(json: &str, name: &str) -> Result<Theme, String> {
     let accent_subtle = resolve_color(&root, "color.accent.subtle").unwrap_or(accent);
     let edited = resolve_color(&root, "color.state.edited").unwrap_or(bg);
     let hover_row = resolve_color(&root, "color.state.hover-row").unwrap_or(bg);
+    let search_match = resolve_color(&root, "color.state.search-match").unwrap_or(
+        if appearance == ThemeAppearance::Light { hex(0xFFF3CD) } else { hex(0x3D3000) }
+    );
     let danger = resolve_color(&root, "color.state.danger").unwrap_or(fb_danger);
     let selection = resolve_color(&root, "color.state.selection").unwrap_or(accent_subtle);
     let status_bar_bg = resolve_color(&root, "color.chrome.status-bar").unwrap_or(bg);
@@ -211,6 +215,7 @@ fn parse_dtcg_theme(json: &str, name: &str) -> Result<Theme, String> {
             accent_subtle,
             edited,
             hover_row,
+            search_match,
             danger,
             status_bar_bg,
             gutter_bg,
@@ -340,6 +345,7 @@ pub fn default_light() -> ThemeColors {
         accent_subtle: hex(0xEFF6FF),
         edited: hex(0xFFF7ED),
         hover_row: hex(0xF5F8FF),
+        search_match: hex(0xFFF3CD),
         danger: hex(0xEF4444),
         status_bar_bg: hex(0xFAFAFA),
         gutter_bg: hex(0xFFFFFF),
@@ -363,6 +369,7 @@ pub fn default_dark() -> ThemeColors {
         accent_subtle: hex(0x172554),
         edited: hex(0x332200),
         hover_row: hex(0x111827),
+        search_match: hex(0x3D3000),
         danger: hex(0xEF4444),
         status_bar_bg: hex(0x0F0F0F),
         gutter_bg: hex(0x1A1A1A),

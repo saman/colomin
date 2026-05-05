@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::{CellCoord, EditAction, OpenFile, PreferredStat, SelectionType, SortState};
@@ -53,6 +53,10 @@ pub struct AppState {
     pub row_heights: HashMap<usize, f32>,
     pub search_query: String,
     pub search_results: Vec<usize>,
+    pub search_results_set: HashSet<usize>,
+    pub search_cursor: usize,
+    pub pending_search: Option<String>,
+    pub search_scroll_to: Option<usize>,
     pub show_search: bool,
     pub show_command_palette: bool,
     pub toast_message: Option<String>,
@@ -165,6 +169,10 @@ impl AppState {
             row_heights: HashMap::new(),
             search_query: String::new(),
             search_results: Vec::new(),
+            search_results_set: HashSet::new(),
+            search_cursor: 0,
+            pending_search: None,
+            search_scroll_to: None,
             show_search: false,
             show_command_palette: false,
             toast_message: None,
@@ -210,6 +218,12 @@ impl AppState {
             row_layout_version: 1, // start at 1 so first ensure_* always computes
             col_layout_version: 1,
         }
+    }
+
+    pub fn apply_search_results(&mut self, rows: Vec<usize>) {
+        self.search_results_set = rows.iter().cloned().collect();
+        self.search_results = rows;
+        self.search_cursor = 0;
     }
 
     pub fn effective_row_count(&self) -> usize {

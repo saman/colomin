@@ -380,6 +380,7 @@ impl TableView {
         let accent          = colors.accent;
         let border          = colors.border;
         let hover_row_color = colors.hover_row;
+        let search_color    = colors.search_match;
         let header_sep = border;
         let gutter_sep = border;
 
@@ -477,6 +478,21 @@ impl TableView {
                     } else if col_left + col_w > self.h_scroll_x + h_vp {
                         self.h_scroll_x = (col_left + col_w - h_vp).max(0.0);
                     }
+                }
+            }
+        }
+
+        // ── Scroll to search match navigation target ──
+        if let Some(target_row) = state.search_scroll_to.take() {
+            state.ensure_row_layout();
+            let row_top = state.row_top(target_row);
+            let row_h   = state.row_height_for(target_row);
+            let v_vp    = self.v_viewport_h;
+            if v_vp > 0.0 {
+                if row_top < self.v_scroll_y {
+                    self.v_scroll_y = row_top;
+                } else if row_top + row_h > self.v_scroll_y + v_vp {
+                    self.v_scroll_y = (row_top + row_h - v_vp).max(0.0);
                 }
             }
         }
@@ -808,7 +824,12 @@ impl TableView {
                                 && ctx.input(|i| i.pointer.hover_pos()
                                     .map(|p| ui.max_rect().y_range().contains(p.y) && panel_rect.contains(p))
                                     .unwrap_or(false));
+                            let is_search_match = !state.search_query.is_empty()
+                                && state.display_row_to_actual_row(display_row)
+                                    .map(|ar| state.search_results_set.contains(&ar))
+                                    .unwrap_or(false);
                             let bg = if cell_sel || row_sel { sel_color }
+                                     else if is_search_match { search_color }
                                      else if row_hov { hover_row_color }
                                      else if has_edit { edit_color }
                                      else { surf };
@@ -1377,7 +1398,12 @@ impl TableView {
                     && ctx.input(|i| i.pointer.hover_pos()
                         .map(|p| cell_rect.y_range().contains(p.y) && panel_rect.contains(p))
                         .unwrap_or(false));
+                let is_search_match = !state.search_query.is_empty()
+                    && state.display_row_to_actual_row(display_row)
+                        .map(|ar| state.search_results_set.contains(&ar))
+                        .unwrap_or(false);
                 let bg = if row_sel { sel_color }
+                         else if is_search_match { search_color }
                          else if is_hov { hover_row_color }
                          else { gutter_bg };
 
