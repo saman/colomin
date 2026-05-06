@@ -373,7 +373,7 @@ impl TableView {
         let gutter_bg  = colors.gutter_bg;
         let line_num   = colors.line_number;
         let text_pri   = colors.text_primary;
-        let text_sec   = colors.text_secondary;
+        let _text_sec  = colors.text_secondary;
         let sel_color  = colors.accent_subtle;
         let edit_color = colors.edited;
         let surf       = colors.surface;
@@ -797,6 +797,7 @@ impl TableView {
                 let heights: Vec<f32> = (0..row_count)
                     .map(|r| state.row_height_for(r))
                     .collect();
+                let search_query_lower = state.search_query.to_lowercase();
                 body.heterogeneous_rows(heights.into_iter(), |mut row| {
                     let display_row = row.index();
                     let _row_h = state.row_height_for(display_row);
@@ -824,12 +825,11 @@ impl TableView {
                                 && ctx.input(|i| i.pointer.hover_pos()
                                     .map(|p| ui.max_rect().y_range().contains(p.y) && panel_rect.contains(p))
                                     .unwrap_or(false));
-                            let is_search_match = !state.search_query.is_empty()
+                            let is_search_row = !search_query_lower.is_empty()
                                 && state.display_row_to_actual_row(display_row)
                                     .map(|ar| state.search_results_set.contains(&ar))
                                     .unwrap_or(false);
                             let bg = if cell_sel || row_sel { sel_color }
-                                     else if is_search_match { search_color }
                                      else if row_hov { hover_row_color }
                                      else if has_edit { edit_color }
                                      else { surf };
@@ -914,8 +914,14 @@ impl TableView {
                                 let cell_id = egui::Id::new(("cell", display_row as u64, col_idx as u64));
                                 let resp = ui.interact(ui.max_rect(), cell_id, egui::Sense::click_and_drag());
 
+                                // Fetch value before painting so we can do per-cell search highlight.
+                                let value = get_cell(state, display_row, col_idx);
+                                let cell_bg = if is_search_row
+                                    && value.to_lowercase().contains(&search_query_lower)
+                                { search_color } else { bg };
+
                                 // Paint after interaction registration.
-                                ui.painter().rect_filled(resp.rect, 0.0, bg);
+                                ui.painter().rect_filled(resp.rect, 0.0, cell_bg);
                                 let bottom_color = if self.row_resize == Some(display_row) { accent } else { border };
                                 paint_bottom_border(ui, resp.rect, bottom_color);
                                 if col_resize_line {
@@ -929,7 +935,6 @@ impl TableView {
                                     );
                                 }
                                 let _ = is_cursor;
-                                let value = get_cell(state, display_row, col_idx);
                                 let cell_clip = egui::Rect::from_min_max(
                                     egui::pos2(resp.rect.left() + 4.0, resp.rect.min.y),
                                     egui::pos2(resp.rect.right() - 4.0, resp.rect.max.y),
