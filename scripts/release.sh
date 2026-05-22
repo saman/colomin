@@ -83,10 +83,16 @@ else
     # [package.metadata.bundle] one). BSD sed (macOS) needs the '' after -i.
     sed -i '' -E "s/^version = \"[^\"]+\"/version = \"$VERSION\"/" Cargo.toml
 
+    # Bump the version markers in the website. Both spots are wrapped in
+    # <!--VERSION-->vX.Y.Z<!--/VERSION--> so we can sed-replace deterministically.
+    if [ -f docs/index.html ]; then
+        sed -i '' -E "s|<!--VERSION-->v[^<]+<!--/VERSION-->|<!--VERSION-->v$VERSION<!--/VERSION-->|g" docs/index.html
+    fi
+
     # Refresh Cargo.lock so the version bump is recorded.
     cargo update --workspace --offline >/dev/null 2>&1 || cargo check --quiet
 
-    git add Cargo.toml Cargo.lock
+    git add Cargo.toml Cargo.lock docs/index.html
     git commit -m "Release $TAG"
     git tag "$TAG"
 fi

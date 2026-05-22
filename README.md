@@ -88,8 +88,9 @@ xattr -dr com.apple.quarantine /Applications/Colomin.app
 | `Cmd+O` | Open file |
 | `Cmd+S` | Save current file |
 | `Cmd+W` | Close current tab |
-| `Cmd+Shift+T` | New tab |
-| `Cmd+T` | Cycle theme |
+| `Cmd+T` | New tab |
+| `Cmd+Shift+T` | Cycle theme |
+| `Cmd+F` | Find in table |
 | `Cmd+=` / `Cmd+-` / `Cmd+0` | Zoom in / out / reset |
 | `Cmd+C` | Copy selection |
 | `Cmd+V` | Paste into cell selection |

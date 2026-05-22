@@ -65,7 +65,9 @@ jobs:
           mkdir -p "$STAGING"
           cp -R "target/release/Colomin.app" "$STAGING/"
           ln -s /Applications "$STAGING/Applications"
-          DMG_PATH="Colomin-${VERSION}-universal.dmg"
+          # Keep the asset name stable so /releases/latest/download/Colomin.dmg
+          # always resolves. The version lives in the release name/tag.
+          DMG_PATH="Colomin.dmg"
           hdiutil create \
             -volname "Colomin ${VERSION}" \
             -srcfolder "$STAGING" \

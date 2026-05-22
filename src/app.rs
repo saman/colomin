@@ -616,9 +616,9 @@ impl eframe::App for ColominApp {
             self.close_tab(idx);
         }
 
-        // Cmd+Shift+T: new empty tab (tab mode only)
+        // Cmd+T: new empty tab (tab mode only) — Mac convention.
         let new_tab_shortcut = ctx.input(|i| {
-            i.key_pressed(egui::Key::T) && i.modifiers.command && i.modifiers.shift
+            i.key_pressed(egui::Key::T) && i.modifiers.command && !i.modifiers.shift
         });
         if new_tab_shortcut && self.tab_mode {
             self.tabs.push(TabState::new());
@@ -633,8 +633,9 @@ impl eframe::App for ColominApp {
         let search_shortcut = ctx.input(|i| i.key_pressed(egui::Key::F) && i.modifiers.command);
         if search_shortcut { tab.state.show_search = true; }
 
+        // Cmd+Shift+T: cycle theme.
         let cycle_theme = ctx.input(|i| {
-            i.key_pressed(egui::Key::T) && i.modifiers.command && !i.modifiers.shift
+            i.key_pressed(egui::Key::T) && i.modifiers.command && i.modifiers.shift
         });
         if cycle_theme { tab.state.cycle_theme(); }
 
