@@ -1058,9 +1058,10 @@ impl TableView {
                 // Repaint the full header as a Foreground overlay so body rows
                 // scrolling into the header area are always covered.
                 let y = header_bottom_y.get();
-                // Extend l all the way to the panel left so the gutter header area is
-                // covered by the overlay (gutter is outside the scroll area now).
-                let l = panel_rect.left();
+                // Clip to the data area (right of the gutter) — the gutter's own
+                // top strip is painted by the sticky gutter overlay so that
+                // scrolled-in column text can't bleed over the row-index column.
+                let l = panel_rect.left() + gutter_width;
                 // Clamp r to the viewport's right edge so the header overlay never
                 // bleeds into the cell-editor sidebar (or any other right-side panel).
                 let r = header_right_x.get().min(ui.clip_rect().right());
@@ -1184,8 +1185,11 @@ impl TableView {
                     }
                 } // closes if y > 0.0 && r > l
 
-                // Marching-ants selection border drawn on Order::Middle so it
-                // sits on top of cells but below context menus and tooltips.
+                // Marching-ants selection border on Order::Middle. Stacking
+                // among our four Middle layers is enforced centrally at the
+                // end of show() via move_to_top in the desired order — this
+                // layer ends up last (above gutter overlay/separator) but
+                // still below popups/menus on Order::Foreground.
                 if let Some(sr) = sel_rect_acc.get() {
                     if sr.is_finite() && sr.width() > 1.0 && sr.height() > 1.0 {
                         let layer = egui::LayerId::new(
@@ -1206,9 +1210,18 @@ impl TableView {
                                 egui::StrokeKind::Inside,
                             );
                         } else {
+                            // Inset by 0.5 so the 1px line draws fully inside
+                            // the selection rect (StrokeKind::Inside semantics).
+                            // Otherwise the top edge at y = body_top_y has its
+                            // upper half clipped against the body clip and the
+                            // dashes look thinner / fade into the header strip.
+                            let inset = egui::Rect::from_min_max(
+                                sr.min + egui::vec2(0.5, 0.5),
+                                sr.max - egui::vec2(0.5, 0.5),
+                            );
                             draw_dashed_rect(
                                 &painter,
-                                sr,
+                                inset,
                                 egui::Stroke::new(1.0, accent),
                                 5.0, 4.0,
                                 current_dash,
@@ -1369,16 +1382,71 @@ impl TableView {
         // appears on top of any data cell that might overlap its screen area.
         {
             let v_scroll   = self.v_scroll_y;           // previous-frame scroll (1-frame lag is imperceptible)
-            let header_h   = self.header_bottom_y_last.max(30.0);
-            let gutter_rect = egui::Rect::from_min_max(
-                panel_rect.min,
-                egui::pos2(panel_rect.left() + gutter_width, panel_rect.max.y),
-            );
+            // header_bottom_y_last is an absolute screen Y; fall back to panel.top + 30
+            // on the first frame before the header has been measured.
+            let body_top_y = if self.header_bottom_y_last > 0.0 {
+                self.header_bottom_y_last
+            } else {
+                panel_rect.top() + 30.0
+            };
             let body_rect  = egui::Rect::from_min_max(
-                egui::pos2(panel_rect.left(), panel_rect.top() + header_h),
+                egui::pos2(panel_rect.left(), body_top_y),
                 egui::pos2(panel_rect.left() + gutter_width, panel_rect.max.y),
             );
-            let painter = ui.painter().with_clip_rect(gutter_rect);
+            // Paint on Order::Middle. Within Middle, stable sort preserves
+            // insertion order, and this gutter layer is created AFTER the
+            // header_overlay layer above, so it draws on top of it. Popups
+            // on Order::Foreground still draw above this.
+            let gutter_layer = egui::LayerId::new(
+                egui::Order::Middle,
+                egui::Id::new("gutter_overlay"),
+            );
+
+            // Top-strip painter: full clip including the top corner. Used only
+            // for the static cap fill + bottom separator (neutral zone, never
+            // covered by scrolled row labels).
+            let top_strip_rect = egui::Rect::from_min_max(
+                panel_rect.min,
+                egui::pos2(panel_rect.left() + gutter_width, body_top_y),
+            );
+            let top_painter = ui.ctx().layer_painter(gutter_layer).with_clip_rect(top_strip_rect);
+            top_painter.rect_filled(top_strip_rect, 0.0, gutter_bg);
+            top_painter.rect_filled(
+                egui::Rect::from_min_max(
+                    egui::pos2(panel_rect.left(), body_top_y - 1.0),
+                    egui::pos2(panel_rect.left() + gutter_width, body_top_y),
+                ),
+                0.0,
+                header_sep,
+            );
+
+            // Click on the neutral zone selects all cells (same as Cmd+A).
+            let corner_resp = ui.interact(
+                top_strip_rect,
+                egui::Id::new("gutter_corner_click"),
+                egui::Sense::click(),
+            );
+            if corner_resp.clicked() {
+                if let Some((er, ec, ev)) = self.editing.take() {
+                    commit_edit(state, er, ec, ev);
+                }
+                let total_rows = state.display_row_count();
+                let total_cols = state.col_count();
+                if total_rows > 0 && total_cols > 0 {
+                    state.selection_type = Some(SelectionType::Cell);
+                    state.selection_anchor = Some(CellCoord { row: 0, col: 0 });
+                    state.selection_focus = Some(CellCoord {
+                        row: total_rows - 1,
+                        col: total_cols - 1,
+                    });
+                    state.selected_rows.clear();
+                    state.selected_columns.clear();
+                }
+            }
+
+            // Row-label painter: clipped to body_rect only, so scrolled rows
+            // can't poke up into the top strip.
+            let painter = ui.ctx().layer_painter(gutter_layer).with_clip_rect(body_rect);
 
             state.ensure_row_layout();
             let body_h   = body_rect.height();
@@ -1595,8 +1663,14 @@ impl TableView {
         }
 
         // Gutter separator — 1px line at the left edge of the first data column.
+        // Drawn on Order::Middle, after header_overlay (later insertion order)
+        // so it stays visible across the header strip.
         let sep_x = panel_rect.left() + gutter_width;
-        ui.painter().rect_filled(
+        let sep_layer = egui::LayerId::new(
+            egui::Order::Middle,
+            egui::Id::new("gutter_sep"),
+        );
+        ui.ctx().layer_painter(sep_layer).rect_filled(
             egui::Rect::from_min_max(
                 egui::pos2(sep_x, panel_rect.min.y),
                 egui::pos2(sep_x + 1.0, panel_rect.max.y),
@@ -1608,7 +1682,12 @@ impl TableView {
         // Skip when the selection starts at col 0 — the blue cells flush against
         // the gutter already make the selection obvious.
         if let Some((min_r, max_r, _, _)) = cell_sel_range.filter(|&(_, _, min_c, _)| min_c > 0) {
-            let body_top = self.header_bottom_y_last.max(30.0) + panel_rect.top();
+            // header_bottom_y_last is an absolute screen Y (see body_rect setup above).
+            let body_top = if self.header_bottom_y_last > 0.0 {
+                self.header_bottom_y_last
+            } else {
+                panel_rect.top() + 30.0
+            };
             let v_scroll = self.v_scroll_y;
             state.ensure_row_layout();
             for sel_row in min_r..=max_r {
@@ -1625,6 +1704,21 @@ impl TableView {
                     accent,
                 );
             }
+        }
+
+        // Force a deterministic stacking order within Order::Middle for our
+        // custom paint layers. layer_painter() alone does NOT register the
+        // layer in egui's area_order, and during paint, layers IN area_order
+        // are drawn before layers NOT in area_order (the latter in undefined
+        // HashMap iteration order). By calling move_to_top here in the desired
+        // sequence, all four layers end up in area_order in this exact order,
+        // which the stable sort then preserves — guaranteeing the marching
+        // ants paint above the gutter sep.
+        for id_str in ["header_overlay", "gutter_overlay", "gutter_sep", "sel_dashed"] {
+            ui.ctx().move_to_top(egui::LayerId::new(
+                egui::Order::Middle,
+                egui::Id::new(id_str),
+            ));
         }
 
         // Sync sel_rect and advance the dash animation for the next frame.
@@ -1723,7 +1817,7 @@ impl TableView {
             state.selection_focus  = Some(CellCoord { row: total_rows - 1, col: total_cols - 1 });
             state.selected_rows.clear();
             state.selected_columns.clear();
-            self.scroll_to_focus = true;
+            // Don't scroll — preserve the user's current view position.
         }
 
         if do_enter {

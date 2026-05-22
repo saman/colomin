@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    name: Build macOS universal DMG
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Derive version from tag
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag matches Cargo.toml version
+        run: |
+          TAG_VERSION="${{ steps.ver.outputs.version }}"
+          CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/version *= *"([^"]+)"/\1/')
+          echo "Tag version:   $TAG_VERSION"
+          echo "Cargo version: $CARGO_VERSION"
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "::error::Tag v$TAG_VERSION does not match Cargo.toml version $CARGO_VERSION. Bump Cargo.toml and retag."
+            exit 1
+          fi
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build arm64
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Build x86_64
+        run: cargo build --release --target x86_64-apple-darwin
+
+      - name: Create universal binary
+        run: |
+          mkdir -p target/release
+          lipo -create -output target/release/colomin \
+            target/aarch64-apple-darwin/release/colomin \
+            target/x86_64-apple-darwin/release/colomin
+          lipo -info target/release/colomin
+
+      - name: Bundle .app
+        env:
+          SKIP_BUILD: "1"
+        run: ./scripts/bundle.sh
+
+      - name: Create DMG
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          STAGING="$(mktemp -d)/dmg"
+          mkdir -p "$STAGING"
+          cp -R "target/release/Colomin.app" "$STAGING/"
+          ln -s /Applications "$STAGING/Applications"
+          DMG_PATH="Colomin-${VERSION}-universal.dmg"
+          hdiutil create \
+            -volname "Colomin ${VERSION}" \
+            -srcfolder "$STAGING" \
+            -ov -format UDZO \
+            "$DMG_PATH"
+          echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Colomin-macos-universal
+          path: ${{ env.DMG_PATH }}
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.DMG_PATH }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true

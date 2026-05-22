@@ -147,21 +147,45 @@ fn finalize(acc: Acc) -> Option<Stats> {
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 
-pub fn format_compact(n: usize) -> String {
-    if n < 1_000 {
-        n.to_string()
-    } else if n < 1_000_000 {
-        format!("{:.1}K", n as f64 / 1_000.0)
-    } else {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
+pub fn format_with_commas(n: usize) -> String {
+    let s = n.to_string();
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    for (i, &b) in bytes.iter().enumerate() {
+        if i > 0 && (bytes.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(b as char);
     }
+    out
 }
 
 pub fn format_num(n: f64) -> String {
-    if n == n.floor() && n.abs() < 1e12 {
+    let raw = if n == n.floor() && n.abs() < 1e12 {
         format!("{}", n as i64)
     } else {
         format!("{:.2}", n)
+    };
+    let (sign, rest) = if let Some(r) = raw.strip_prefix('-') {
+        ("-", r)
+    } else {
+        ("", raw.as_str())
+    };
+    let (int_part, frac_part) = match rest.split_once('.') {
+        Some((i, f)) => (i, Some(f)),
+        None => (rest, None),
+    };
+    let int_bytes = int_part.as_bytes();
+    let mut grouped = String::with_capacity(int_part.len() + int_part.len() / 3);
+    for (i, &b) in int_bytes.iter().enumerate() {
+        if i > 0 && (int_bytes.len() - i) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(b as char);
+    }
+    match frac_part {
+        Some(f) => format!("{}{}.{}", sign, grouped, f),
+        None => format!("{}{}", sign, grouped),
     }
 }
 
@@ -185,12 +209,12 @@ pub fn format_stat(stats: Stats, preferred: crate::state::PreferredStat) -> (Str
     let (count, num_count, sum, avg, min, max, char_len) = stats;
     use crate::state::PreferredStat::*;
     match preferred {
-        Count => (format_compact(count), true),
+        Count => (format_with_commas(count), true),
         Sum if num_count > 0 => (format_num(sum), true),
         Avg if num_count > 0 => (format_num(avg), true),
         Min if num_count > 0 => (format_num(min), true),
         Max if num_count > 0 => (format_num(max), true),
-        Length => (format_compact(char_len), true),
+        Length => (format_with_commas(char_len), true),
         _ => ("-".to_string(), false),
     }
 }

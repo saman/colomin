@@ -868,11 +868,39 @@ impl eframe::App for ColominApp {
 
         // ── Empty state ──
         if tab.state.file.is_none() {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                ui.centered_and_justified(|ui| {
-                    ui.label("Open a CSV file with ⌘O, or drag and drop a file here");
+            let text_color = tab.state.current_theme().text_secondary;
+            let panel_fill = tab.state.current_theme().bg;
+            let mut open_dialog = false;
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE.fill(panel_fill))
+                .show(ctx, |ui| {
+                    let resp = ui.allocate_response(
+                        ui.available_size(),
+                        egui::Sense::click(),
+                    );
+                    if resp.clicked() {
+                        open_dialog = true;
+                    }
+                    if resp.hovered() {
+                        ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    ui.painter().text(
+                        resp.rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "Open a CSV file with ⌘O, or drag and drop a file here",
+                        egui::FontId::proportional(13.0),
+                        text_color,
+                    );
                 });
-            });
+            if open_dialog {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("CSV Files", &["csv", "tsv", "txt"])
+                    .add_filter("All Files", &["*"])
+                    .pick_file()
+                {
+                    self.open_file_in_tab(path.to_string_lossy().into_owned());
+                }
+            }
             return;
         }
 
@@ -1584,9 +1612,9 @@ impl ColominApp {
                     // ── Left: file info ──
                     if has_file {
                         let row_text = if has_filter {
-                            format!("{} / {} rows", st::format_compact(rows), st::format_compact(unfiltered))
+                            format!("{} / {} rows", st::format_with_commas(rows), st::format_with_commas(unfiltered))
                         } else {
-                            format!("{} rows", st::format_compact(rows))
+                            format!("{} rows", st::format_with_commas(rows))
                         };
                         ui.colored_label(text_pri, row_text);
                         ui.colored_label(text_sec, "·");

@@ -9,8 +9,12 @@ APP_NAME="Colomin"
 BUNDLE_DIR="$PROJECT_DIR/target/release/$APP_NAME.app"
 BINARY_NAME="Colomin"
 
-echo "Building release binary..."
-cargo build --release --manifest-path "$PROJECT_DIR/Cargo.toml"
+if [ "${SKIP_BUILD:-0}" = "1" ]; then
+    echo "SKIP_BUILD=1 set; expecting prebuilt binary in target/release."
+else
+    echo "Building release binary..."
+    cargo build --release --manifest-path "$PROJECT_DIR/Cargo.toml"
+fi
 
 echo "Creating app bundle..."
 rm -rf "$BUNDLE_DIR"

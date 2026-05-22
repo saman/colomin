@@ -59,6 +59,21 @@ ln -sf "$(pwd)/target/release/Colomin.app" /Applications/Colomin.app
 open /Applications/Colomin.app --args /tmp/wide_test.csv
 ```
 
+## Install (prebuilt DMG)
+
+Download the latest `Colomin-<version>-universal.dmg` from the [Releases page](https://github.com/saman/colomin/releases), open it, and drag `Colomin.app` to `Applications`.
+
+The app is **not code-signed or notarized**, so the first launch will be blocked by Gatekeeper with a warning that the developer cannot be verified. To open it the first time:
+
+1. Right-click `Colomin.app` in `Applications` and choose **Open**.
+2. Click **Open** in the confirmation dialog.
+
+After that, normal double-click launches will work. If macOS instead reports the app is "damaged and cannot be opened," remove the quarantine attribute:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Colomin.app
+```
+
 ## macOS behavior
 
 - Finder open events are handled through Apple Events, including "Open With" on a running instance.
