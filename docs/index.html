@@ -19,7 +19,7 @@
 
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
 
   <script>
     // Apply stored theme before paint to avoid a flash.
@@ -79,6 +79,7 @@
 
       --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif;
       --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+      --rule: 1px solid var(--border);
 
       color-scheme: dark;
     }
@@ -176,20 +177,58 @@
       background: var(--bg);
       color: var(--text);
       font-family: var(--font-sans);
-      font-feature-settings: 'cv11', 'ss01', 'ss03';
+      font-feature-settings: 'ss01', 'ss02', 'cv01';
       -webkit-font-smoothing: antialiased;
       -moz-osx-font-smoothing: grayscale;
-      line-height: 1.5;
+      text-rendering: optimizeLegibility;
+      line-height: 1.55;
       overflow-x: hidden;
     }
 
+    /* Tabular figures globally — numbers align, the page reads like a data sheet. */
+    body { font-variant-numeric: tabular-nums; }
+    h1, h2, h3, h4, h5, p, span, li, a, button { font-variant-numeric: tabular-nums; }
+
     body {
       background:
-        radial-gradient(1200px 700px at 70% -10%, var(--accent-glow), transparent 60%),
-        radial-gradient(900px 600px at 10% 5%, var(--accent-glow-soft), transparent 55%),
+        radial-gradient(900px 480px at 85% -8%, var(--accent-glow), transparent 55%),
         var(--bg);
       min-height: 100vh;
       transition: background-color 0.2s ease, color 0.2s ease;
+      position: relative;
+    }
+
+    /* Hairline vertical guides — visible only on wide viewports. The page becomes a grid. */
+    body::before, body::after {
+      content: '';
+      position: fixed;
+      top: 0; bottom: 0;
+      width: 1px;
+      background: var(--border);
+      opacity: 0.5;
+      pointer-events: none;
+      z-index: 1;
+    }
+    body::before { left: max(24px, calc((100vw - 1120px) / 2 - 24px)); }
+    body::after  { right: max(24px, calc((100vw - 1120px) / 2 - 24px)); }
+    @media (max-width: 1180px) {
+      body::before, body::after { display: none; }
+    }
+
+    /* Subtle entry — staggered fade on first paint. */
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .rise { animation: rise 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+    .d1 { animation-delay: 0.05s; }
+    .d2 { animation-delay: 0.15s; }
+    .d3 { animation-delay: 0.28s; }
+    .d4 { animation-delay: 0.42s; }
+    .d5 { animation-delay: 0.55s; }
+    .d6 { animation-delay: 0.70s; }
+    @media (prefers-reduced-motion: reduce) {
+      .rise { animation: none; }
     }
 
     a { color: inherit; text-decoration: none; }
@@ -206,8 +245,8 @@
       position: sticky;
       top: 0;
       z-index: 50;
-      backdrop-filter: saturate(140%) blur(14px);
-      -webkit-backdrop-filter: saturate(140%) blur(14px);
+      backdrop-filter: saturate(140%) blur(18px);
+      -webkit-backdrop-filter: saturate(140%) blur(18px);
       background: var(--nav-bg);
       border-bottom: 1px solid var(--nav-border);
     }
@@ -215,7 +254,7 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 16px 32px;
+      padding: 14px 32px;
       max-width: 1120px;
       margin: 0 auto;
     }
@@ -223,33 +262,48 @@
       display: flex;
       align-items: center;
       gap: 10px;
-      font-weight: 700;
-      letter-spacing: -0.01em;
-      font-size: 17px;
+      font-weight: 600;
+      letter-spacing: -0.018em;
+      font-size: 16px;
     }
     .brand img {
-      width: 28px;
-      height: 28px;
-      border-radius: 7px;
-      box-shadow: 0 6px 18px var(--accent-glow);
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      box-shadow: 0 4px 14px var(--accent-glow);
     }
     .nav-links {
       display: flex;
-      gap: 28px;
+      gap: 24px;
       align-items: center;
       color: var(--text-dim);
-      font-size: 14px;
+      font-size: 13.5px;
       font-weight: 500;
+      letter-spacing: -0.005em;
+    }
+    .nav-links a {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      transition: color 0.18s ease;
     }
     .nav-links a:hover { color: var(--text); }
+    .nav-links a svg {
+      width: 15px;
+      height: 15px;
+      opacity: 0.75;
+      transition: opacity 0.18s ease;
+    }
+    .nav-links a:hover svg { opacity: 1; }
     .nav-cta {
       padding: 8px 14px;
       background: var(--text);
       color: var(--bg);
-      border-radius: 8px;
+      border-radius: 6px;
       font-weight: 600;
-      font-size: 13px;
-      transition: transform 0.15s ease, opacity 0.15s ease;
+      font-size: 12.5px;
+      letter-spacing: -0.005em;
+      transition: transform 0.18s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.18s ease;
     }
     .nav-cta:hover { transform: translateY(-1px); opacity: 0.9; }
 
@@ -281,50 +335,58 @@
 
     /* ---------- hero ---------- */
     .hero {
-      padding: 96px 0 64px;
+      padding: 112px 0 72px;
       position: relative;
     }
     .eyebrow {
       display: inline-flex;
       align-items: center;
-      gap: 8px;
-      padding: 6px 12px;
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      background: var(--eyebrow-bg);
-      font-size: 12px;
+      gap: 10px;
+      font-family: var(--font-mono);
+      font-size: 11px;
       font-weight: 500;
-      color: var(--text-dim);
-      margin-bottom: 28px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-mute);
+      margin-bottom: 36px;
     }
     .eyebrow .dot {
       width: 6px;
       height: 6px;
       border-radius: 999px;
       background: var(--accent);
-      box-shadow: 0 0 12px var(--accent);
+      box-shadow: 0 0 14px var(--accent);
+      animation: pulse 2.4s ease-in-out infinite;
+    }
+    .eyebrow .sep { color: var(--border-strong); }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.55; transform: scale(0.85); }
     }
 
     h1.headline {
-      font-size: clamp(44px, 7vw, 88px);
+      font-family: var(--font-sans);
+      font-size: clamp(48px, 7.6vw, 96px);
       font-weight: 800;
-      line-height: 1.02;
-      letter-spacing: -0.035em;
+      line-height: 1.0;
+      letter-spacing: -0.038em;
       max-width: 14ch;
-      margin-bottom: 24px;
+      margin-bottom: 32px;
+      color: var(--text);
     }
     h1.headline .gradient {
-      background: linear-gradient(135deg, var(--accent-hi) 0%, var(--accent) 40%, var(--accent-lo) 100%);
+      background: linear-gradient(135deg, var(--accent-hi) 0%, var(--accent) 45%, var(--accent-lo) 100%);
       -webkit-background-clip: text;
       background-clip: text;
       color: transparent;
     }
 
     .lede {
-      font-size: clamp(17px, 1.6vw, 20px);
+      font-size: clamp(17px, 1.55vw, 20px);
       color: var(--text-dim);
-      max-width: 56ch;
-      margin-bottom: 40px;
+      max-width: 54ch;
+      margin-bottom: 44px;
+      line-height: 1.55;
     }
 
     .cta-row {
@@ -332,49 +394,93 @@
       gap: 14px;
       align-items: center;
       flex-wrap: wrap;
-      margin-bottom: 56px;
+      margin-bottom: 64px;
     }
     .btn {
       display: inline-flex;
       align-items: center;
       gap: 10px;
-      padding: 14px 22px;
-      border-radius: 12px;
+      padding: 15px 22px;
+      border-radius: 10px;
       font-weight: 600;
       font-size: 15px;
       letter-spacing: -0.005em;
-      transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease, border-color 0.18s ease;
+      transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1),
+                  box-shadow 0.22s ease,
+                  background 0.22s ease,
+                  border-color 0.22s ease,
+                  color 0.22s ease;
       cursor: pointer;
       border: 1px solid transparent;
     }
     .btn-primary {
-      background: linear-gradient(135deg, var(--accent) 0%, var(--accent-lo) 100%);
+      background: var(--accent);
       color: var(--btn-primary-text);
-      box-shadow: var(--btn-primary-shadow), var(--btn-primary-inset);
+      box-shadow: 0 1px 0 rgba(255,255,255,0.18) inset,
+                  0 12px 28px -10px var(--accent-glow);
     }
     .btn-primary:hover {
       transform: translateY(-1px);
-      box-shadow: var(--btn-primary-shadow-hi), var(--btn-primary-inset-hi);
+      background: var(--accent-hi);
+      box-shadow: 0 1px 0 rgba(255,255,255,0.25) inset,
+                  0 18px 36px -12px var(--accent-glow);
     }
     .btn-ghost {
-      background: var(--surface-tint);
+      background: transparent;
       border-color: var(--border-strong);
       color: var(--text);
     }
-    .btn-ghost:hover { background: var(--surface-hover); border-color: var(--border-strong); }
-    .btn .platform { color: var(--btn-primary-text-dim); font-weight: 500; font-size: 13px; }
-
-    .meta-row {
-      display: flex;
-      gap: 24px;
-      align-items: center;
-      flex-wrap: wrap;
-      color: var(--text-mute);
-      font-size: 13px;
-      margin-bottom: 72px;
+    .btn-ghost:hover { background: var(--surface-tint); border-color: var(--text-mute); }
+    .btn .btn-text {
+      display: inline-flex;
+      flex-direction: column;
+      align-items: flex-start;
+      line-height: 1.15;
+      gap: 2px;
     }
-    .meta-row span { display: inline-flex; align-items: center; gap: 6px; }
-    .meta-row svg { opacity: 0.7; }
+    .btn .btn-label { font-size: 15px; font-weight: 600; }
+    .btn .platform {
+      color: var(--btn-primary-text-dim);
+      font-family: var(--font-mono);
+      font-weight: 500;
+      font-size: 11px;
+      letter-spacing: 0.04em;
+    }
+
+    /* Hero spec line — looks like a data row, not a marketing badge row. */
+    .meta-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0;
+      border-top: var(--rule);
+      border-bottom: var(--rule);
+      padding: 18px 0;
+      margin-bottom: 72px;
+      color: var(--text-dim);
+      font-size: 13px;
+    }
+    .meta-row > span {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 16px;
+      border-right: var(--rule);
+    }
+    .meta-row > span:last-child { border-right: none; }
+    .meta-row .ml {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 500;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-mute);
+    }
+    .meta-row .mv {
+      font-size: 14px;
+      color: var(--text);
+      font-weight: 500;
+      letter-spacing: -0.005em;
+    }
 
     /* ---------- hero table mockup ---------- */
     .mockup {
@@ -403,65 +509,100 @@
     :root[data-theme="dark"] .mockup .shot-light { display: none; }
 
     /* ---------- section base ---------- */
-    section { padding: 96px 0; position: relative; }
+    section { padding: 112px 0; position: relative; }
+    section + section { border-top: var(--rule); }
     .section-title {
-      font-size: clamp(28px, 3.5vw, 44px);
+      font-family: var(--font-sans);
+      font-size: clamp(30px, 3.8vw, 48px);
       font-weight: 700;
-      letter-spacing: -0.025em;
-      line-height: 1.1;
-      margin-bottom: 16px;
-      max-width: 22ch;
+      letter-spacing: -0.028em;
+      line-height: 1.08;
+      margin-bottom: 18px;
+      max-width: 24ch;
+    }
+    .section-title em {
+      font-style: normal;
+      color: var(--accent);
+      font-weight: 700;
     }
     .section-lede {
       color: var(--text-dim);
       font-size: 17px;
-      max-width: 60ch;
-      margin-bottom: 56px;
+      max-width: 58ch;
+      margin-bottom: 64px;
+      line-height: 1.6;
     }
     .label-eyebrow {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 10px;
       font-family: var(--font-mono);
-      font-size: 12px;
-      color: var(--accent);
+      font-size: 11px;
+      color: var(--text-mute);
       text-transform: uppercase;
-      letter-spacing: 0.1em;
-      margin-bottom: 16px;
+      letter-spacing: 0.14em;
+      margin-bottom: 22px;
+    }
+    .label-eyebrow .num {
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .label-eyebrow .num::after {
+      content: '';
+      display: inline-block;
+      width: 24px;
+      height: 1px;
+      background: var(--border-strong);
+      margin: 0 4px 0 10px;
+      vertical-align: middle;
     }
 
     /* ---------- features ---------- */
     .features {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
-      gap: 1px;
-      background: var(--border);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      overflow: hidden;
+      border-top: var(--rule);
+      border-left: var(--rule);
     }
     .feature {
-      background: var(--bg-elev);
-      padding: 32px 28px;
-      transition: background 0.2s ease;
+      position: relative;
+      padding: 36px 32px 40px;
+      border-right: var(--rule);
+      border-bottom: var(--rule);
+      transition: background 0.3s ease;
     }
-    .feature:hover { background: var(--surface); }
+    .feature:hover { background: var(--surface-tint); }
+    .feature:hover .icon { color: var(--accent-hi); transform: translateY(-2px); }
+    .feature .num {
+      position: absolute;
+      top: 14px;
+      right: 16px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 500;
+      letter-spacing: 0.12em;
+      color: var(--text-mute);
+    }
     .feature .icon {
-      width: 36px; height: 36px;
-      border-radius: 9px;
-      background: var(--icon-tile-bg);
+      width: 28px; height: 28px;
       display: flex; align-items: center; justify-content: center;
-      margin-bottom: 18px;
+      margin-bottom: 22px;
       color: var(--accent);
-      border: 1px solid var(--icon-tile-border);
+      transition: color 0.25s ease, transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
     }
+    .feature .icon svg { width: 24px; height: 24px; }
     .feature h3 {
-      font-size: 17px;
+      font-size: 18px;
       font-weight: 600;
-      letter-spacing: -0.01em;
-      margin-bottom: 8px;
+      letter-spacing: -0.012em;
+      margin-bottom: 10px;
+      color: var(--text);
     }
     .feature p {
       color: var(--text-dim);
       font-size: 14px;
-      line-height: 1.6;
+      line-height: 1.65;
+      max-width: 32ch;
     }
 
     /* ---------- why native ---------- */
@@ -477,26 +618,37 @@
       gap: 12px;
     }
     .compare-card {
-      padding: 24px;
-      border-radius: 14px;
+      padding: 28px 24px 24px;
       border: 1px solid var(--border);
       background: var(--bg-elev);
+      position: relative;
     }
     .compare-card.good {
       border-color: var(--accent);
-      box-shadow: 0 0 0 1px var(--accent-glow-soft), 0 20px 40px -20px var(--accent-glow);
+      background-color: var(--bg-elev);
+      background-image: radial-gradient(120% 80% at 50% 0%, var(--accent-glow-soft), transparent 70%);
+    }
+    .compare-card.good::before {
+      content: '';
+      position: absolute;
+      top: -1px; left: -1px; right: -1px;
+      height: 2px;
+      background: var(--accent);
     }
     .compare-card h4 {
-      font-size: 13px;
-      font-weight: 600;
-      color: var(--text-dim);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-mute);
       text-transform: uppercase;
-      letter-spacing: 0.08em;
-      margin-bottom: 16px;
+      letter-spacing: 0.14em;
+      margin-bottom: 20px;
+      padding-bottom: 16px;
+      border-bottom: var(--rule);
     }
     .compare-card.good h4 { color: var(--accent); }
-    .compare-card ul { list-style: none; display: grid; gap: 10px; font-size: 14px; }
-    .compare-card li { display: flex; gap: 10px; align-items: flex-start; color: var(--text-dim); }
+    .compare-card ul { list-style: none; display: grid; gap: 12px; font-size: 14.5px; }
+    .compare-card li { display: flex; gap: 12px; align-items: flex-start; color: var(--text-dim); }
     .compare-card.good li { color: var(--text); }
     .compare-card li::before {
       content: '';
@@ -524,18 +676,21 @@
     .shortcuts {
       display: grid;
       grid-template-columns: repeat(2, 1fr);
-      gap: 0 48px;
-      border-top: 1px solid var(--border);
+      gap: 0 56px;
+      border-top: var(--rule);
     }
     .shortcut-row {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 14px 0;
-      border-bottom: 1px solid var(--border);
-      font-size: 14px;
+      padding: 16px 0;
+      border-bottom: var(--rule);
+      font-size: 14.5px;
+      transition: color 0.18s ease, padding 0.18s ease;
     }
-    .shortcut-row .action { color: var(--text-dim); }
+    .shortcut-row:hover { color: var(--accent); }
+    .shortcut-row:hover .action { color: var(--text); }
+    .shortcut-row .action { color: var(--text-dim); letter-spacing: -0.005em; }
     .kbd {
       display: inline-flex;
       align-items: center;
@@ -545,74 +700,97 @@
     }
     .kbd kbd {
       display: inline-block;
-      padding: 3px 8px;
-      background: var(--bg-elev);
+      padding: 4px 9px;
+      background: var(--surface-tint);
       border: 1px solid var(--border-strong);
       border-bottom-width: 2px;
-      border-radius: 6px;
+      border-radius: 5px;
       color: var(--text);
       font-family: inherit;
-      font-size: 12px;
+      font-size: 11.5px;
       font-weight: 500;
       min-width: 22px;
       text-align: center;
+      letter-spacing: 0;
     }
 
     /* ---------- download CTA ---------- */
     .download {
       text-align: center;
-      padding: 120px 0;
+      padding: 140px 0 120px;
       position: relative;
+      overflow: hidden;
     }
     .download::before {
       content: '';
       position: absolute;
-      inset: 0;
-      background: radial-gradient(800px 400px at 50% 50%, var(--accent-glow), transparent 60%);
+      inset: -1px 0 auto 0;
+      height: 1px;
+      background: var(--border);
+    }
+    .download::after {
+      content: '';
+      position: absolute;
+      inset: auto 0 -50% 0;
+      height: 100%;
+      background: radial-gradient(620px 320px at 50% 100%, var(--accent-glow), transparent 65%);
       pointer-events: none;
     }
+    .download .container { position: relative; z-index: 1; }
     .download img.big-icon {
-      width: 96px; height: 96px;
-      margin: 0 auto 28px;
-      border-radius: 22px;
-      box-shadow: var(--shadow-glow);
+      width: 84px; height: 84px;
+      margin: 0 auto 32px;
+      border-radius: 20px;
+      box-shadow: 0 30px 60px -25px var(--accent);
     }
     .download h2 {
-      font-size: clamp(36px, 5vw, 56px);
+      font-family: var(--font-sans);
+      font-size: clamp(38px, 5.4vw, 64px);
       font-weight: 800;
-      letter-spacing: -0.035em;
-      line-height: 1.05;
-      margin-bottom: 20px;
+      letter-spacing: -0.038em;
+      line-height: 1.04;
+      margin-bottom: 22px;
+      max-width: 18ch;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    .download h2 em {
+      font-style: normal;
+      color: var(--accent);
+      font-weight: 800;
     }
     .download p {
       color: var(--text-dim);
       font-size: 17px;
-      max-width: 50ch;
-      margin: 0 auto 40px;
+      max-width: 48ch;
+      margin: 0 auto 44px;
+      line-height: 1.55;
     }
 
     /* ---------- footer ---------- */
     footer {
-      border-top: 1px solid var(--border);
-      padding: 56px 0 40px;
+      border-top: var(--rule);
+      padding: 64px 0 40px;
       color: var(--text-mute);
-      font-size: 13px;
+      font-size: 13.5px;
     }
     .footer-grid {
       display: grid;
       grid-template-columns: 2fr 1fr 1fr 1fr;
       gap: 48px;
-      margin-bottom: 48px;
+      margin-bottom: 56px;
     }
     .footer-col h5 {
-      font-size: 12px;
-      font-weight: 600;
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      font-weight: 500;
       color: var(--text);
       text-transform: uppercase;
-      letter-spacing: 0.08em;
-      margin-bottom: 14px;
+      letter-spacing: 0.16em;
+      margin-bottom: 16px;
     }
     .footer-col ul { list-style: none; display: grid; gap: 10px; }
+    .footer-col a { transition: color 0.18s ease; }
     .footer-col a:hover { color: var(--text); }
     .footer-bottom {
       display: flex;
@@ -621,19 +799,47 @@
       flex-wrap: wrap;
       gap: 16px;
       padding-top: 28px;
-      border-top: 1px solid var(--border);
+      border-top: var(--rule);
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      letter-spacing: 0.06em;
+    }
+
+    /* ---------- hero table mockup polish ---------- */
+    .mockup {
+      position: relative;
+      isolation: isolate;
+    }
+    .mockup::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      box-shadow: inset 0 0 0 1px var(--border);
+      border-radius: 6px;
     }
 
     /* ---------- responsive ---------- */
+    @media (max-width: 960px) {
+      .meta-row { grid-template-columns: repeat(2, 1fr); gap: 14px 0; }
+      .meta-row > span:nth-child(2) { border-right: none; }
+      .features { grid-template-columns: repeat(2, 1fr); }
+    }
     @media (max-width: 860px) {
-      .hero { padding: 56px 0 32px; }
-      section { padding: 64px 0; }
+      .hero { padding: 72px 0 40px; }
+      section { padding: 80px 0; }
       .features { grid-template-columns: 1fr; }
       .why { grid-template-columns: 1fr; }
       .compare { grid-template-columns: 1fr; }
       .shortcuts { grid-template-columns: 1fr; gap: 0; }
       .footer-grid { grid-template-columns: 1fr 1fr; gap: 32px; }
-      .nav-links a:not(.nav-cta) { display: none; }
+      .nav-links a:not(.nav-cta):not(#theme-toggle) { display: none; }
+      h1.headline { font-size: clamp(40px, 11vw, 64px); }
+    }
+    @media (max-width: 540px) {
+      .meta-row { grid-template-columns: 1fr 1fr; }
+      .btn { width: 100%; justify-content: center; }
+      .btn .platform { display: none; }
     }
   </style>
 </head>
@@ -646,29 +852,39 @@
         <span>Colomin</span>
       </a>
       <div class="nav-links">
-        <a href="#features">Features</a>
-        <a href="#shortcuts">Shortcuts</a>
-        <a href="https://github.com/saman/colomin" target="_blank" rel="noopener">GitHub</a>
+        <a href="#features">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="9" x2="9" y2="21"/><line x1="15" y1="9" x2="15" y2="21"/></svg>
+          Features
+        </a>
+        <a href="#shortcuts">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></svg>
+          Shortcuts
+        </a>
+        <a href="https://github.com/saman/colomin" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.38 7.86 10.9.58.11.79-.25.79-.56v-2.16c-3.2.7-3.87-1.36-3.87-1.36-.52-1.32-1.27-1.68-1.27-1.68-1.04-.71.08-.69.08-.69 1.15.08 1.76 1.18 1.76 1.18 1.02 1.75 2.69 1.25 3.34.96.1-.75.4-1.25.72-1.54-2.55-.29-5.23-1.28-5.23-5.7 0-1.26.45-2.29 1.18-3.1-.12-.29-.51-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11.04 11.04 0 015.78 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.18 1.84 1.18 3.1 0 4.43-2.69 5.41-5.25 5.69.41.36.78 1.06.78 2.14v3.17c0 .31.21.68.8.56C20.21 21.38 23.5 17.08 23.5 12 23.5 5.65 18.35.5 12 .5z"/></svg>
+          GitHub
+        </a>
         <button id="theme-toggle" class="theme-toggle" aria-label="Toggle theme" title="Toggle theme">
-          <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+          <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.93 4.93l1.41 1.41m11.32 11.32l1.41 1.41M4.93 19.07l1.41-1.41m11.32-11.32l1.41-1.41"/></svg>
           <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
         </button>
-        <a href="https://github.com/saman/colomin/releases/latest/download/Colomin.dmg" class="nav-cta">Download</a>
       </div>
     </div>
   </nav>
 
   <header class="hero">
     <div class="container">
-      <span class="eyebrow"><span class="dot"></span> <!--VERSION-->v0.1.0<!--/VERSION--></span>
-      <h1 class="headline">A CSV editor that <span class="gradient">feels like text</span>.</h1>
-      <p class="lede">Open it instantly. Edit it like a spreadsheet. Save it like a file. Colomin handles millions of rows without flinching, no cloud, no subscription, no waiting for a worksheet to load.</p>
+      <span class="eyebrow rise d1"><span class="dot"></span> <!--VERSION-->v0.1.0<!--/VERSION--> <span class="sep">/</span> Native CSV editor <span class="sep">/</span> macOS</span>
+      <h1 class="headline rise d2">A CSV editor that <span class="gradient">feels like&nbsp;text</span>.</h1>
+      <p class="lede rise d3">Open it instantly. Edit it like a spreadsheet. Save it like a file. Colomin handles millions of rows without flinching, no cloud, no subscription, no waiting for a worksheet to load.</p>
 
-      <div class="cta-row">
+      <div class="cta-row rise d4">
         <a href="https://github.com/saman/colomin/releases/latest/download/Colomin.dmg" class="btn btn-primary">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>
-          Download for macOS
-          <span class="platform">· Apple Silicon &amp; Intel · macOS 13+</span>
+          <span class="btn-text">
+            <span class="btn-label">Download for macOS</span>
+            <span class="platform">Apple Silicon &amp; Intel · macOS 13+</span>
+          </span>
         </a>
         <a href="https://github.com/saman/colomin" target="_blank" rel="noopener" class="btn btn-ghost">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.38 7.86 10.9.58.11.79-.25.79-.56v-2.16c-3.2.7-3.87-1.36-3.87-1.36-.52-1.32-1.27-1.68-1.27-1.68-1.04-.71.08-.69.08-.69 1.15.08 1.76 1.18 1.76 1.18 1.02 1.75 2.69 1.25 3.34.96.1-.75.4-1.25.72-1.54-2.55-.29-5.23-1.28-5.23-5.7 0-1.26.45-2.29 1.18-3.1-.12-.29-.51-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11.04 11.04 0 015.78 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.18 1.84 1.18 3.1 0 4.43-2.69 5.41-5.25 5.69.41.36.78 1.06.78 2.14v3.17c0 .31.21.68.8.56C20.21 21.38 23.5 17.08 23.5 12 23.5 5.65 18.35.5 12 .5z"/></svg>
@@ -676,27 +892,27 @@
         </a>
       </div>
 
-      <div class="meta-row">
+      <div class="meta-row rise d5">
         <span>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
-          Opens 10M-row CSVs
+          <span class="ml">Capacity</span>
+          <span class="mv">10M+ rows</span>
         </span>
         <span>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
-          Auto-detects delimiters
+          <span class="ml">Delimiters</span>
+          <span class="mv">Auto-detect</span>
         </span>
         <span>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9h18M9 3v18"/></svg>
-          Finder &amp; "Open With"
+          <span class="ml">Open with</span>
+          <span class="mv">Finder &amp; drag</span>
         </span>
         <span>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-12V5l-8-3-8 3v5c0 8 8 12 8 12z"/></svg>
-          100% local, offline
+          <span class="ml">Network</span>
+          <span class="mv">Fully offline</span>
         </span>
       </div>
 
       <!-- Screenshot -->
-      <div class="mockup">
+      <div class="mockup rise d6">
         <img src="images/screenshot-dark.png" alt="Colomin editing a 2-million-row CSV in dark mode" class="shot shot-dark" width="2198" height="1132" />
         <img src="images/screenshot-light.png" alt="Colomin editing a 2-million-row CSV in light mode" class="shot shot-light" width="2198" height="1132" />
       </div>
@@ -706,54 +922,60 @@
   <!-- Features -->
   <section id="features">
     <div class="container">
-      <p class="label-eyebrow">Built for real data</p>
-      <h2 class="section-title">Everything you need. Nothing you don't.</h2>
+      <p class="label-eyebrow"><span class="num">01</span>Built for real data</p>
+      <h2 class="section-title">Everything you need. <em>Nothing you don't.</em></h2>
       <p class="section-lede">Colomin is opinionated about what a CSV editor should do: open fast, edit fast, save fast. The rest is invisible until you need it.</p>
 
       <div class="features">
         <div class="feature">
+          <span class="num">01</span>
           <div class="icon">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"/></svg>
           </div>
           <h3>Instant open</h3>
           <p>Background indexing streams huge files into view. Start editing while the rest of the file is still loading.</p>
         </div>
 
         <div class="feature">
+          <span class="num">02</span>
           <div class="icon">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="9" x2="9" y2="21"/><line x1="15" y1="9" x2="15" y2="21"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="9" x2="9" y2="21"/><line x1="15" y1="9" x2="15" y2="21"/></svg>
           </div>
           <h3>Smart delimiters</h3>
           <p>Auto-detects comma, semicolon, tab, and pipe. Infers column types so numbers sort like numbers.</p>
         </div>
 
         <div class="feature">
+          <span class="num">03</span>
           <div class="icon">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18"/><path d="M7 6v1m5-1v1m5-1v1"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18"/><path d="M7 6v1m5-1v1m5-1v1"/></svg>
           </div>
           <h3>Spreadsheet feel</h3>
           <p>Rectangular selection, copy/paste ranges, in-place editing, undo/redo. Keyboard navigation that actually works.</p>
         </div>
 
         <div class="feature">
+          <span class="num">04</span>
           <div class="icon">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 4H6l6 8-6 8h12"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 4H6l6 8-6 8h12"/></svg>
           </div>
           <h3>Selection stats</h3>
           <p>Count, sum, avg, min, max, and character length update live as you select cells. No formulas required.</p>
         </div>
 
         <div class="feature">
+          <span class="num">05</span>
           <div class="icon">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32l1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41m11.32-11.32l1.41-1.41"/><path d="M12 8a4 4 0 0 0 0 8" fill="currentColor"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32l1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41m11.32-11.32l1.41-1.41"/><path d="M12 8a4 4 0 0 0 0 8" fill="currentColor"/></svg>
           </div>
           <h3>Themes you'll want</h3>
           <p>Multiple bundled light and dark themes, plus font and zoom controls. Tuned for long sessions and tired eyes.</p>
         </div>
 
         <div class="feature">
+          <span class="num">06</span>
           <div class="icon">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v14h14"/><rect x="7" y="3" width="14" height="14" rx="1"/><line x1="7" y1="7" x2="21" y2="7"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v14h14"/><rect x="7" y="3" width="14" height="14" rx="1"/><line x1="7" y1="7" x2="21" y2="7"/></svg>
           </div>
           <h3>Mac to the bones</h3>
           <p>Real .app bundle. Finder "Open With". Drag-and-drop. Tab mode or separate windows. Native everything.</p>
@@ -763,12 +985,12 @@
   </section>
 
   <!-- Why native -->
-  <section style="padding-top: 0;">
+  <section id="why">
     <div class="container">
       <div class="why">
         <div>
-          <p class="label-eyebrow">Built for the file</p>
-          <h2 class="section-title">Written in Rust. No browser engine in sight.</h2>
+          <p class="label-eyebrow"><span class="num">02</span>Built for the file</p>
+          <h2 class="section-title">Written in Rust. <em>No browser engine in sight.</em></h2>
           <p class="section-lede">Most CSV tools want to be something else — a calculation engine, a presentation layer, a database. Colomin just opens the file, lets you edit it, and saves it back, at the speed your CPU can actually go.</p>
         </div>
         <div class="compare">
@@ -800,8 +1022,8 @@
   <!-- Shortcuts -->
   <section id="shortcuts">
     <div class="container">
-      <p class="label-eyebrow">Keyboard first</p>
-      <h2 class="section-title">Made for hands that don't leave the home row.</h2>
+      <p class="label-eyebrow"><span class="num">03</span>Keyboard first</p>
+      <h2 class="section-title">Made for hands that <em>don't leave the home row.</em></h2>
       <p class="section-lede">Every common action has a shortcut. Once you learn five of them, you'll never touch the menu bar again.</p>
 
       <div class="shortcuts">
@@ -826,7 +1048,7 @@
   <section class="download" id="download">
     <div class="container">
       <img src="images/icon.svg" alt="Colomin app icon" class="big-icon" />
-      <h2>Open a CSV that doesn't<br/>take a minute to load.</h2>
+      <h2>Open a CSV that doesn't <em>take a minute to load.</em></h2>
       <p>Free and open source for personal use. Apple Silicon &amp; Intel · macOS 13+. Source under AGPLv3.</p>
       <div class="cta-row" style="justify-content: center; margin-bottom: 0;">
         <a href="https://github.com/saman/colomin/releases/latest/download/Colomin.dmg" class="btn btn-primary">
