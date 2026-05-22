@@ -482,7 +482,6 @@
       border: 1px solid var(--border);
       background: var(--bg-elev);
     }
-    .compare-card.bad { opacity: 0.85; }
     .compare-card.good {
       border-color: var(--accent);
       box-shadow: 0 0 0 1px var(--accent-glow-soft), 0 20px 40px -20px var(--accent-glow);
@@ -510,12 +509,12 @@
       -webkit-mask-repeat: no-repeat;
               mask-repeat: no-repeat;
     }
-    .compare-card.bad li::before {
+    .compare-card li.bad::before, .compare-card.bad li::before {
       color: var(--text-mute);
       -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'><path d='M4 4l8 8M12 4l-8 8'/></svg>");
               mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'><path d='M4 4l8 8M12 4l-8 8'/></svg>");
     }
-    .compare-card.good li::before {
+    .compare-card li.good::before, .compare-card.good li::before {
       color: var(--accent);
       -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'><path d='M3 8l3.5 3.5L13 5'/></svg>");
               mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'><path d='M3 8l3.5 3.5L13 5'/></svg>");
@@ -631,6 +630,7 @@
       section { padding: 64px 0; }
       .features { grid-template-columns: 1fr; }
       .why { grid-template-columns: 1fr; }
+      .compare { grid-template-columns: 1fr; }
       .shortcuts { grid-template-columns: 1fr; gap: 0; }
       .footer-grid { grid-template-columns: 1fr 1fr; gap: 32px; }
       .nav-links a:not(.nav-cta) { display: none; }
@@ -660,15 +660,15 @@
 
   <header class="hero">
     <div class="container">
-      <span class="eyebrow"><span class="dot"></span> Now in beta — built for macOS</span>
+      <span class="eyebrow"><span class="dot"></span> <!--VERSION-->v0.1.0<!--/VERSION--></span>
       <h1 class="headline">A CSV editor that <span class="gradient">feels like text</span>.</h1>
-      <p class="lede">Open it instantly. Edit it like a spreadsheet. Save it like a file. Colomin handles millions of rows without flinching, no Electron, no cloud, no waiting for a worksheet to load.</p>
+      <p class="lede">Open it instantly. Edit it like a spreadsheet. Save it like a file. Colomin handles millions of rows without flinching, no cloud, no subscription, no waiting for a worksheet to load.</p>
 
       <div class="cta-row">
         <a href="https://github.com/saman/colomin/releases/latest/download/Colomin.dmg" class="btn btn-primary">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>
           Download for macOS
-          <span class="platform">· Apple Silicon &amp; Intel</span>
+          <span class="platform">· Apple Silicon &amp; Intel · macOS 13+</span>
         </a>
         <a href="https://github.com/saman/colomin" target="_blank" rel="noopener" class="btn btn-ghost">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.38 7.86 10.9.58.11.79-.25.79-.56v-2.16c-3.2.7-3.87-1.36-3.87-1.36-.52-1.32-1.27-1.68-1.27-1.68-1.04-.71.08-.69.08-.69 1.15.08 1.76 1.18 1.76 1.18 1.02 1.75 2.69 1.25 3.34.96.1-.75.4-1.25.72-1.54-2.55-.29-5.23-1.28-5.23-5.7 0-1.26.45-2.29 1.18-3.1-.12-.29-.51-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11.04 11.04 0 015.78 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.18 1.84 1.18 3.1 0 4.43-2.69 5.41-5.25 5.69.41.36.78 1.06.78 2.14v3.17c0 .31.21.68.8.56C20.21 21.38 23.5 17.08 23.5 12 23.5 5.65 18.35.5 12 .5z"/></svg>
@@ -721,7 +721,7 @@
 
         <div class="feature">
           <div class="icon">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h10M4 17h16"/></svg>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="9" x2="9" y2="21"/><line x1="15" y1="9" x2="15" y2="21"/></svg>
           </div>
           <h3>Smart delimiters</h3>
           <p>Auto-detects comma, semicolon, tab, and pipe. Infers column types so numbers sort like numbers.</p>
@@ -729,7 +729,7 @@
 
         <div class="feature">
           <div class="icon">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18"/><path d="M7 6v1m5-1v1m5-1v1"/></svg>
           </div>
           <h3>Spreadsheet feel</h3>
           <p>Rectangular selection, copy/paste ranges, in-place editing, undo/redo. Keyboard navigation that actually works.</p>
@@ -737,7 +737,7 @@
 
         <div class="feature">
           <div class="icon">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l3-3 4 4 5-6"/></svg>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 4H6l6 8-6 8h12"/></svg>
           </div>
           <h3>Selection stats</h3>
           <p>Count, sum, avg, min, max, and character length update live as you select cells. No formulas required.</p>
@@ -745,7 +745,7 @@
 
         <div class="feature">
           <div class="icon">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32l1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41m11.32-11.32l1.41-1.41"/><path d="M12 8a4 4 0 0 0 0 8" fill="currentColor"/></svg>
           </div>
           <h3>Themes you'll want</h3>
           <p>Multiple bundled light and dark themes, plus font and zoom controls. Tuned for long sessions and tired eyes.</p>
@@ -753,7 +753,7 @@
 
         <div class="feature">
           <div class="icon">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M8 4v6"/></svg>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v14h14"/><rect x="7" y="3" width="14" height="14" rx="1"/><line x1="7" y1="7" x2="21" y2="7"/></svg>
           </div>
           <h3>Mac to the bones</h3>
           <p>Real .app bundle. Finder "Open With". Drag-and-drop. Tab mode or separate windows. Native everything.</p>
@@ -767,27 +767,29 @@
     <div class="container">
       <div class="why">
         <div>
-          <p class="label-eyebrow">Native, not "native-ish"</p>
+          <p class="label-eyebrow">Built for the file</p>
           <h2 class="section-title">Written in Rust. No browser engine in sight.</h2>
-          <p class="section-lede">Colomin doesn't ship Chromium. It doesn't sync your data through a third party. It opens a file from disk, lets you edit it, and saves it back — at the speed your CPU can actually go.</p>
+          <p class="section-lede">Most CSV tools want to be something else — a calculation engine, a presentation layer, a database. Colomin just opens the file, lets you edit it, and saves it back, at the speed your CPU can actually go.</p>
         </div>
         <div class="compare">
-          <div class="compare-card bad">
-            <h4>Electron CSV apps</h4>
+          <div class="compare-card">
+            <h4>Excel / Numbers</h4>
             <ul>
-              <li>300 MB install for a table</li>
-              <li>Spinning fan on 50k rows</li>
-              <li>Cloud account required</li>
-              <li>Telemetry by default</li>
+              <li class="bad">Caps under 1M rows</li>
+              <li class="good">Native macOS app</li>
+              <li class="bad">Cloud sync by default</li>
+              <li class="bad">Closed source</li>
+              <li class="bad">Paid / bundled</li>
             </ul>
           </div>
           <div class="compare-card good">
             <h4>Colomin</h4>
             <ul>
-              <li>Tiny native binary</li>
-              <li>Streams millions of rows</li>
-              <li>No accounts, ever</li>
-              <li>Zero telemetry</li>
+              <li>Streams 10M+ rows</li>
+              <li>Native macOS, written in Rust</li>
+              <li>Local files, always</li>
+              <li>AGPLv3 source</li>
+              <li>Free for personal use</li>
             </ul>
           </div>
         </div>
@@ -805,9 +807,10 @@
       <div class="shortcuts">
         <div class="shortcut-row"><span class="action">Open file</span><span class="kbd"><kbd>⌘</kbd><kbd>O</kbd></span></div>
         <div class="shortcut-row"><span class="action">Save</span><span class="kbd"><kbd>⌘</kbd><kbd>S</kbd></span></div>
-        <div class="shortcut-row"><span class="action">New tab</span><span class="kbd"><kbd>⌘</kbd><kbd>⇧</kbd><kbd>T</kbd></span></div>
+        <div class="shortcut-row"><span class="action">Find</span><span class="kbd"><kbd>⌘</kbd><kbd>F</kbd></span></div>
+        <div class="shortcut-row"><span class="action">New tab</span><span class="kbd"><kbd>⌘</kbd><kbd>T</kbd></span></div>
         <div class="shortcut-row"><span class="action">Close tab</span><span class="kbd"><kbd>⌘</kbd><kbd>W</kbd></span></div>
-        <div class="shortcut-row"><span class="action">Cycle theme</span><span class="kbd"><kbd>⌘</kbd><kbd>T</kbd></span></div>
+        <div class="shortcut-row"><span class="action">Cycle theme</span><span class="kbd"><kbd>⌘</kbd><kbd>⇧</kbd><kbd>T</kbd></span></div>
         <div class="shortcut-row"><span class="action">Zoom in / out / reset</span><span class="kbd"><kbd>⌘</kbd><kbd>=</kbd><kbd>−</kbd><kbd>0</kbd></span></div>
         <div class="shortcut-row"><span class="action">Copy selection</span><span class="kbd"><kbd>⌘</kbd><kbd>C</kbd></span></div>
         <div class="shortcut-row"><span class="action">Paste into range</span><span class="kbd"><kbd>⌘</kbd><kbd>V</kbd></span></div>
@@ -824,7 +827,7 @@
     <div class="container">
       <img src="images/icon.svg" alt="Colomin app icon" class="big-icon" />
       <h2>Open a CSV that doesn't<br/>take a minute to load.</h2>
-      <p>Free during beta. Works on Apple Silicon and Intel. Open source under AGPLv3.</p>
+      <p>Free and open source for personal use. Apple Silicon &amp; Intel · macOS 13+. Source under AGPLv3.</p>
       <div class="cta-row" style="justify-content: center; margin-bottom: 0;">
         <a href="https://github.com/saman/colomin/releases/latest/download/Colomin.dmg" class="btn btn-primary">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>
@@ -864,15 +867,15 @@
         <div class="footer-col">
           <h5>Legal</h5>
           <ul>
-            <li><a href="COMMERCIAL.md">Commercial terms</a></li>
-            <li><a href="TRADEMARK_POLICY.md">Trademark policy</a></li>
+            <li><a href="https://github.com/saman/colomin/blob/main/docs/COMMERCIAL.md" target="_blank" rel="noopener">Commercial terms</a></li>
+            <li><a href="https://github.com/saman/colomin/blob/main/docs/TRADEMARK_POLICY.md" target="_blank" rel="noopener">Trademark policy</a></li>
             <li><a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPLv3</a></li>
           </ul>
         </div>
       </div>
       <div class="footer-bottom">
         <span>© 2026 Colomin. Made on a Mac.</span>
-        <span style="font-family: var(--font-mono);">v0.1 · colomin.app</span>
+        <span style="font-family: var(--font-mono);"><!--VERSION-->v0.1.0<!--/VERSION--> · colomin.app</span>
       </div>
     </div>
   </footer>
