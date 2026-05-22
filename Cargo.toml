@@ -1,6 +1,6 @@
 [package]
 name = "colomin"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "A native CSV editor built with egui"
 
@@ -30,7 +30,7 @@ opt-level = 1
 [package.metadata.bundle]
 name = "Colomin"
 identifier = "com.colomin.app"
-version = "0.1.0"
+version = "0.1.1"
 copyright = "Copyright © 2025 Colomin"
 category = "public.app-category.productivity"
 short_description = "A native CSV editor"
