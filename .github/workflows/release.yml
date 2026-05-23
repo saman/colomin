@@ -63,9 +63,22 @@ jobs:
       # so unsigned builds still publish. Once MACOS_CERTIFICATE and the
       # AC_API_KEY_* secrets are set, signing and notarization activate
       # automatically. See docs/NOTARIZATION.md for setup.
+      #
+      # NOTE: `secrets.*` cannot be referenced directly in step `if:`
+      # conditions. The preflight step below loads each into env, then exports
+      # boolean outputs that the gated steps check.
+
+      - name: Preflight signing config
+        id: pre
+        env:
+          MC: ${{ secrets.MACOS_CERTIFICATE }}
+          P8: ${{ secrets.AC_API_KEY_P8 }}
+        run: |
+          if [ -n "$MC" ]; then echo "has_cert=true" >> "$GITHUB_OUTPUT"; fi
+          if [ -n "$P8" ]; then echo "has_key=true"  >> "$GITHUB_OUTPUT"; fi
 
       - name: Set up signing keychain
-        if: ${{ secrets.MACOS_CERTIFICATE != '' }}
+        if: ${{ steps.pre.outputs.has_cert == 'true' }}
         id: keychain
         env:
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
@@ -100,7 +113,7 @@ jobs:
           echo "Imported identity: $IDENTITY"
 
       - name: Set up notary API key
-        if: ${{ secrets.AC_API_KEY_P8 != '' }}
+        if: ${{ steps.pre.outputs.has_key == 'true' }}
         id: notary
         env:
           AC_API_KEY_P8: ${{ secrets.AC_API_KEY_P8 }}
