@@ -43,7 +43,7 @@ xcrun notarytool submit "$SUBMIT_PATH" \
     --key-id "$APPLE_API_KEY_ID" \
     --issuer "$APPLE_API_ISSUER_ID" \
     --wait \
-    --timeout 30m
+    --timeout 60m
 
 # Staple the ticket to the ORIGINAL target (not the zip), so it's attached
 # to the .app/.dmg that users actually see.
