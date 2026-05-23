@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Colomin — The native CSV editor for macOS</title>
+  <title>Colomin - The native CSV editor for macOS</title>
   <meta name="description" content="Colomin is a fast, native CSV editor for macOS. Open millions of rows, edit at the speed of a spreadsheet, and keep your data on your machine." />
   <meta name="theme-color" content="#0a0a0c" media="(prefers-color-scheme: dark)" />
   <meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)" />
@@ -11,7 +11,7 @@
   <link rel="icon" type="image/svg+xml" href="images/icon.svg" />
   <link rel="apple-touch-icon" href="images/icon.svg" />
 
-  <meta property="og:title" content="Colomin — The native CSV editor for macOS" />
+  <meta property="og:title" content="Colomin - The native CSV editor for macOS" />
   <meta property="og:description" content="Open millions of rows. Edit at the speed of a spreadsheet. No Electron." />
   <meta property="og:image" content="images/icon.svg" />
   <meta property="og:type" content="website" />
@@ -19,7 +19,7 @@
 
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
 
   <script>
     // Apply stored theme before paint to avoid a flash.
@@ -29,11 +29,15 @@
         if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
       } catch (e) {}
     })();
+
+    // Always land at the top of the page on load - disable browser scroll restoration.
+    if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+    window.addEventListener('beforeunload', function() { window.scrollTo(0, 0); });
   </script>
 
   <style>
     :root {
-      /* Dark — the default */
+      /* Dark - the default */
       --bg: #0a0a0c;
       --bg-elev: #111114;
       --surface: #16161a;
@@ -77,14 +81,14 @@
       --radius-md: 12px;
       --radius-lg: 18px;
 
-      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif;
+      --font-sans: 'Avenir Next', 'SF Pro Display', 'SF Pro Text', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
       --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
       --rule: 1px solid var(--border);
 
       color-scheme: dark;
     }
 
-    /* Light — applied via system preference (when no explicit override) or [data-theme="light"] */
+    /* Light - applied via system preference (when no explicit override) or [data-theme="light"] */
     @media (prefers-color-scheme: light) {
       :root:not([data-theme="dark"]) {
         --bg: #fafafa;
@@ -128,7 +132,7 @@
         color-scheme: light;
       }
     }
-    /* Explicit override — wins over system preference */
+    /* Explicit override - wins over system preference */
     :root[data-theme="light"] {
       --bg: #fafafa;
       --bg-elev: #ffffff;
@@ -185,7 +189,7 @@
       overflow-x: hidden;
     }
 
-    /* Tabular figures globally — numbers align, the page reads like a data sheet. */
+    /* Tabular figures globally - numbers align, the page reads like a data sheet. */
     body { font-variant-numeric: tabular-nums; }
     h1, h2, h3, h4, h5, p, span, li, a, button { font-variant-numeric: tabular-nums; }
 
@@ -198,7 +202,7 @@
       position: relative;
     }
 
-    /* Hairline vertical guides — visible only on wide viewports. The page becomes a grid. */
+    /* Hairline vertical guides - visible only on wide viewports. The page becomes a grid. */
     body::before, body::after {
       content: '';
       position: fixed;
@@ -215,7 +219,7 @@
       body::before, body::after { display: none; }
     }
 
-    /* Subtle entry — staggered fade on first paint. */
+    /* Subtle entry - staggered fade on first paint. */
     @keyframes rise {
       from { opacity: 0; transform: translateY(8px); }
       to   { opacity: 1; transform: translateY(0); }
@@ -367,7 +371,7 @@
     h1.headline {
       font-family: var(--font-sans);
       font-size: clamp(48px, 7.6vw, 96px);
-      font-weight: 800;
+      font-weight: 600;
       line-height: 1.0;
       letter-spacing: -0.038em;
       max-width: 14ch;
@@ -447,7 +451,7 @@
       letter-spacing: 0.04em;
     }
 
-    /* Hero spec line — looks like a data row, not a marketing badge row. */
+    /* Hero spec line - looks like a data row, not a marketing badge row. */
     .meta-row {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
@@ -514,7 +518,7 @@
     .section-title {
       font-family: var(--font-sans);
       font-size: clamp(30px, 3.8vw, 48px);
-      font-weight: 700;
+      font-weight: 600;
       letter-spacing: -0.028em;
       line-height: 1.08;
       margin-bottom: 18px;
@@ -523,7 +527,7 @@
     .section-title em {
       font-style: normal;
       color: var(--accent);
-      font-weight: 700;
+      font-weight: 600;
     }
     .section-lede {
       color: var(--text-dim);
@@ -746,7 +750,7 @@
     .download h2 {
       font-family: var(--font-sans);
       font-size: clamp(38px, 5.4vw, 64px);
-      font-weight: 800;
+      font-weight: 600;
       letter-spacing: -0.038em;
       line-height: 1.04;
       margin-bottom: 22px;
@@ -757,7 +761,7 @@
     .download h2 em {
       font-style: normal;
       color: var(--accent);
-      font-weight: 800;
+      font-weight: 600;
     }
     .download p {
       color: var(--text-dim);
@@ -947,14 +951,16 @@
         </a>
       </div>
 
+      <!-- Hidden until cask is accepted into homebrew/homebrew-cask.
       <div class="install-alt rise d4">
         <span class="or">or via Homebrew</span>
-        <button type="button" class="brew-install" data-copy="brew install --cask saman/tap/colomin" aria-label="Copy Homebrew install command">
+        <button type="button" class="brew-install" data-copy="brew install --cask colomin" aria-label="Copy Homebrew install command">
           <span class="prompt">$</span>
-          <span class="cmd">brew install --cask saman/tap/colomin</span>
+          <span class="cmd">brew install --cask colomin</span>
           <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
         </button>
       </div>
+      -->
 
       <div class="meta-row rise d5">
         <span>
@@ -1055,7 +1061,7 @@
         <div>
           <p class="label-eyebrow"><span class="num">02</span>Built for the file</p>
           <h2 class="section-title">Written in Rust. <em>No browser engine in sight.</em></h2>
-          <p class="section-lede">Most CSV tools want to be something else — a calculation engine, a presentation layer, a database. Colomin just opens the file, lets you edit it, and saves it back, at the speed your CPU can actually go.</p>
+          <p class="section-lede">Most CSV tools want to be something else - a calculation engine, a presentation layer, a database. Colomin just opens the file, lets you edit it, and saves it back, at the speed your CPU can actually go.</p>
         </div>
         <div class="compare">
           <div class="compare-card">
@@ -1121,14 +1127,16 @@
         </a>
         <a href="https://github.com/saman/colomin" target="_blank" rel="noopener" class="btn btn-ghost">Star on GitHub</a>
       </div>
+      <!-- Hidden until cask is accepted into homebrew/homebrew-cask.
       <div class="install-alt center">
         <span class="or">or via Homebrew</span>
-        <button type="button" class="brew-install" data-copy="brew install --cask saman/tap/colomin" aria-label="Copy Homebrew install command">
+        <button type="button" class="brew-install" data-copy="brew install --cask colomin" aria-label="Copy Homebrew install command">
           <span class="prompt">$</span>
-          <span class="cmd">brew install --cask saman/tap/colomin</span>
+          <span class="cmd">brew install --cask colomin</span>
           <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
         </button>
       </div>
+      -->
     </div>
   </section>
 

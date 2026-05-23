@@ -59,9 +59,9 @@ ln -sf "$(pwd)/target/release/Colomin.app" /Applications/Colomin.app
 open /Applications/Colomin.app --args /tmp/wide_test.csv
 ```
 
-## Install (prebuilt DMG)
+## Install
 
-Download the latest `Colomin-<version>-universal.dmg` from the [Releases page](https://github.com/saman/colomin/releases), open it, and drag `Colomin.app` to `Applications`.
+Download the latest `Colomin.dmg` from the [Releases page](https://github.com/saman/colomin/releases), open it, and drag `Colomin.app` to `Applications`.
 
 The app is **not code-signed or notarized**, so the first launch will be blocked by Gatekeeper with a warning that the developer cannot be verified. To open it the first time:
 
@@ -112,6 +112,10 @@ xattr -dr com.apple.quarantine /Applications/Colomin.app
 - Themes are bundled from `themes/*.tokens.json`
 - Icons are embedded from `assets/icons/*.svg`
 - The UI stack is `eframe`/`egui`
+
+## Provenance
+
+Significant portions of this codebase were drafted with AI assistance and reviewed, tested, and integrated by a human maintainer.
 
 ## Licensing
 
