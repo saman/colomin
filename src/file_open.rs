@@ -9,6 +9,13 @@ pub struct LoadedFile {
     pub path: String,
     pub index_result: csv_engine::parser::IndexResult,
     pub first_chunk: Option<csv_engine::types::RowChunk>,
+    pub initial_sort: Option<InitialSort>,
+}
+
+pub struct InitialSort {
+    pub column_index: usize,
+    pub ascending: bool,
+    pub permutation: Vec<usize>,
 }
 
 pub struct LoadingHandle {
@@ -18,7 +25,11 @@ pub struct LoadingHandle {
 
 /// Spawn a background thread to load a CSV file.
 /// Poll `handle.rx.try_recv()` each frame, and read `handle.progress` for a 0.0–1.0 progress value.
-pub fn open_file_async(path: String) -> LoadingHandle {
+///
+/// If `initial_sort` is `Some((col, ascending))`, the sort permutation is computed in the
+/// same background thread so the file arrives already sorted — avoiding a visible reshuffle
+/// after a previously-saved sort is restored.
+pub fn open_file_async(path: String, initial_sort: Option<(usize, bool)>) -> LoadingHandle {
     let progress = Arc::new(AtomicU32::new(0));
     let progress_for_thread = progress.clone();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -37,6 +48,20 @@ pub fn open_file_async(path: String) -> LoadingHandle {
                     }
                 },
             )?;
+            let initial_sort = initial_sort.and_then(|(col, ascending)| {
+                if col >= index_result.columns.len() { return None; }
+                let _t = crate::dspan!("Sort", "initial_sort during load");
+                csv_engine::parser::sort_rows(
+                    &PathBuf::from(&path_clone),
+                    &index_result.row_offsets,
+                    &std::collections::HashMap::new(),
+                    col,
+                    ascending,
+                    index_result.delimiter,
+                )
+                .ok()
+                .map(|permutation| InitialSort { column_index: col, ascending, permutation })
+            });
             let first_chunk = csv_engine::parser::read_chunk_with_delim(
                 &PathBuf::from(&path_clone),
                 &index_result.row_offsets,
@@ -51,6 +76,7 @@ pub fn open_file_async(path: String) -> LoadingHandle {
                 path: path_clone,
                 index_result,
                 first_chunk,
+                initial_sort,
             })
         })();
         match &result {
@@ -75,6 +101,7 @@ pub fn apply_loaded_file(state: &mut AppState, loaded: LoadedFile) {
     let path = &loaded.path;
     let index_result = loaded.index_result;
     let first_chunk = loaded.first_chunk;
+    let initial_sort = loaded.initial_sort;
 
     let file_path = PathBuf::from(path);
     let col_count = index_result.columns.len();
@@ -85,6 +112,17 @@ pub fn apply_loaded_file(state: &mut AppState, loaded: LoadedFile) {
         file_size_bytes: index_result.file_size_bytes,
         delimiter: index_result.delimiter,
         has_headers: index_result.has_headers,
+    };
+
+    let (sort_permutation, sort_state) = match initial_sort {
+        Some(s) => (
+            Some(s.permutation),
+            Some(state::SortState {
+                column_index: s.column_index,
+                direction: if s.ascending { state::SortDirection::Asc } else { state::SortDirection::Desc },
+            }),
+        ),
+        None => (None, None),
     };
 
     state.file = Some(state::OpenFile {
@@ -100,12 +138,12 @@ pub fn apply_loaded_file(state: &mut AppState, loaded: LoadedFile) {
         inserted_columns: Vec::new(),
         inserted_col_values: std::collections::HashMap::new(),
         original_col_count: col_count,
-        sort_permutation: None,
+        sort_permutation,
         filter_indices: None,
         columns_renamed: false,
     });
     state.unfiltered_row_count = index_result.total_rows;
-    state.sort_state = None;
+    state.sort_state = sort_state;
     state.has_filter = false;
     state.is_loading = false;
     state.loading_progress = 1.0;
