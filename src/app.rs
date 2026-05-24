@@ -1,4 +1,5 @@
-use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use eframe::egui;
 
@@ -19,9 +20,15 @@ struct TabState {
     state: AppState,
     table: TableView,
     loading: Option<LoadingHandle>,
+    /// Stored per-file settings stashed at load-start so we read disk once.
+    /// Consumed (minus the sort, which is applied in the background loader) once the file finishes loading.
+    pending_settings: Option<FileSettings>,
     sorting_rx: Option<std::sync::mpsc::Receiver<Result<SortResult, String>>>,
     searching_rx: Option<std::sync::mpsc::Receiver<Result<crate::csv_engine::types::SearchResult, String>>>,
     stats_rx: Option<std::sync::mpsc::Receiver<(String, crate::ui::stats::Stats)>>,
+    /// Cancellation flag for the in-flight stats computation (if any).
+    /// Setting it true tells the background thread to exit early.
+    stats_cancel: Option<Arc<AtomicBool>>,
     was_resizing: bool,
 }
 
@@ -31,9 +38,11 @@ impl TabState {
             state: AppState::new(),
             table: TableView::new(),
             loading: None,
+            pending_settings: None,
             sorting_rx: None,
             searching_rx: None,
             stats_rx: None,
+            stats_cancel: None,
             was_resizing: false,
         }
     }
@@ -62,7 +71,15 @@ impl TabState {
         self.state.is_loading = true;
         self.state.loading_progress = 0.0;
         self.state.loading_message = filename;
-        self.loading = Some(file_open::open_file_async(path));
+        let settings = FileSettingsStore::get_for_path(&path);
+        let initial_sort = settings.as_ref().and_then(|s| {
+            match (s.sort_column_index, s.sort_ascending) {
+                (Some(col), Some(asc)) => Some((col, asc)),
+                _ => None,
+            }
+        });
+        self.pending_settings = settings;
+        self.loading = Some(file_open::open_file_async(path, initial_sort));
     }
 }
 
@@ -360,9 +377,9 @@ impl eframe::App for ColominApp {
             tab.state.loading_progress = progress;
             match handle.rx.try_recv() {
                 Ok(Ok(loaded)) => {
-                    let stored = FileSettingsStore::get_for_path(&loaded.path.clone());
                     file_open::apply_loaded_file(&mut tab.state, loaded);
-                    if let Some(settings) = stored {
+                    // Apply stashed non-sort settings (sort was already applied in the loader).
+                    if let Some(settings) = tab.pending_settings.take() {
                         if let Some(header) = settings.header_row_enabled {
                             tab.state.header_row_enabled = header;
                             tab.state.clear_cache();
@@ -376,9 +393,6 @@ impl eframe::App for ColominApp {
                             tab.state.row_heights = settings.row_heights;
                             tab.state.invalidate_row_layout();
                         }
-                        if let (Some(col), Some(asc)) = (settings.sort_column_index, settings.sort_ascending) {
-                            tab.state.pending_sort = Some((col, asc));
-                        }
                     }
                     tab.loading = None;
                     ctx.request_repaint();
@@ -388,11 +402,13 @@ impl eframe::App for ColominApp {
                     tab.state.is_loading = false;
                     tab.state.loading_message.clear();
                     tab.loading = None;
+                    tab.pending_settings = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint(),
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     tab.state.is_loading = false;
                     tab.loading = None;
+                    tab.pending_settings = None;
                 }
             }
         }
@@ -411,12 +427,13 @@ impl eframe::App for ColominApp {
                         tab.state.invalidate_row_layout();
                     }
                     tab.sorting_rx = None;
+                    tab.state.is_sorting = false;
                     FileSettingsStore::save_for_tab(tab);
                     ctx.request_repaint();
                 }
-                Ok(Err(e)) => { eprintln!("Sort error: {}", e); tab.sorting_rx = None; }
+                Ok(Err(e)) => { eprintln!("Sort error: {}", e); tab.sorting_rx = None; tab.state.is_sorting = false; }
                 Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint(),
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => { tab.sorting_rx = None; }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => { tab.sorting_rx = None; tab.state.is_sorting = false; }
             }
         }
 
@@ -433,17 +450,21 @@ impl eframe::App for ColominApp {
                         );
                         tab.state.computed_stats = Some(stats);
                         tab.state.stats_key = key;
-                        tab.state.computing_stats = false;
                         ctx.request_repaint();
                     } else {
                         crate::dlog!(Debug, "Stats", "async stale (selection moved); discarding");
                     }
+                    tab.state.stats_pending_key.clear();
+                    tab.state.computing_stats = false;
                     tab.stats_rx = None;
+                    tab.stats_cancel = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint(),
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    tab.state.stats_pending_key.clear();
                     tab.state.computing_stats = false;
                     tab.stats_rx = None;
+                    tab.stats_cancel = None;
                 }
             }
         }
@@ -467,7 +488,22 @@ impl eframe::App for ColominApp {
             use crate::ui::stats as st;
             const ASYNC_THRESHOLD: usize = 10_000;
             let key = tab.state.selection_stats_key();
-            if !key.is_empty() && key != tab.state.stats_key && tab.stats_rx.is_none() {
+            let needs_new = !key.is_empty()
+                && key != tab.state.stats_key
+                && key != tab.state.stats_pending_key;
+
+            if needs_new {
+                // Cancel any in-flight computation for the old selection. The
+                // worker thread will exit at its next periodic cancel check;
+                // its stale result (if any) is discarded on receive because
+                // the selection key won't match.
+                if let Some(c) = tab.stats_cancel.take() {
+                    c.store(true, Ordering::Relaxed);
+                    crate::dlog!(Debug, "Stats", "cancelling in-flight (selection changed)");
+                }
+                tab.stats_rx = None;
+                tab.state.stats_pending_key.clear();
+
                 let cell_count = st::selection_cell_count(&tab.state);
                 if cell_count <= ASYNC_THRESHOLD {
                     let _t = crate::dspan!("Stats", "compute_sync");
@@ -488,19 +524,27 @@ impl eframe::App for ColominApp {
                     tab.state.computed_stats = None;
                     let key2 = key.clone();
                     let snap = StatsSnapshot::from(&tab.state);
+                    let cancel = Arc::new(AtomicBool::new(false));
+                    let cancel_thread = Arc::clone(&cancel);
+                    tab.stats_cancel = Some(cancel);
+                    tab.state.stats_pending_key = key;
                     let (tx, rx) = std::sync::mpsc::channel();
                     crate::dlog!(Info, "Stats", "spawn async cells={}", cell_count);
                     std::thread::spawn(move || {
                         let _t = crate::dspan!("Stats", "compute_async");
-                        let result = crate::ui::stats::compute_stats_snapshot(&snap);
+                        let result = crate::ui::stats::compute_stats_snapshot(&snap, &cancel_thread);
                         let _ = tx.send((key2, result));
                     });
                     tab.stats_rx = Some(rx);
                     ctx.request_repaint();
                 }
             } else if key.is_empty() {
+                if let Some(c) = tab.stats_cancel.take() {
+                    c.store(true, Ordering::Relaxed);
+                }
                 tab.state.computed_stats = None;
                 tab.state.stats_key.clear();
+                tab.state.stats_pending_key.clear();
                 tab.state.computing_stats = false;
                 tab.stats_rx = None;
             }
@@ -532,6 +576,7 @@ impl eframe::App for ColominApp {
                         let _ = tx.send(result);
                     });
                     tab.sorting_rx = Some(rx);
+                    tab.state.is_sorting = true;
                     ctx.request_repaint();
                 }
             }
@@ -1555,18 +1600,8 @@ impl ColominApp {
         let bytes       = tab.state.file.as_ref().map(|f| f.metadata.file_size_bytes).unwrap_or(0);
         let has_filter  = tab.state.has_filter;
         let unfiltered  = tab.state.unfiltered_row_count;
-        let sort_label: Option<String> = tab.state.sort_state.as_ref().and_then(|s| {
-            let dir = if matches!(s.direction, SortDirection::Asc) { "↑" } else { "↓" };
-            let name = tab.state.file.as_ref()
-                .and_then(|f| f.metadata.columns.get(s.column_index))
-                .map(|c| c.name.clone())
-                .unwrap_or_else(|| "?".to_string());
-            Some(format!("Sorted {} {}", name, dir))
-        });
-
         let stats_key    = tab.state.selection_stats_key();
         let current_stats = if tab.state.stats_key == stats_key { tab.state.computed_stats } else { None };
-        let computing    = tab.state.computing_stats;
         let pref         = tab.state.preferred_stat;
         let shape_text   = Self::selection_shape_text_for(&tab.state);
 
@@ -1622,10 +1657,6 @@ impl ColominApp {
                         ui.colored_label(text_sec, format!("{} cols", cols));
                         ui.colored_label(text_sec, "·");
                         ui.colored_label(text_sec, Self::format_size(bytes));
-                        if let Some(ref s) = sort_label {
-                            ui.colored_label(text_sec, "·");
-                            ui.colored_label(text_sec, s);
-                        }
                         if let Some(ref shape) = shape_text {
                             ui.colored_label(text_sec, "·");
                             ui.colored_label(text_pri, shape);
@@ -1635,16 +1666,17 @@ impl ColominApp {
 
                     // ── Center: stats badge ──
                     if !stats_key.is_empty() {
-                        let badge_label = if let Some(s) = current_stats {
-                            let (val, _) = st::format_stat(s, pref);
-                            Some(format!("{}: {}", pref.label(), val))
-                        } else if computing {
-                            Some("Computing…".to_string())
+                        let badge_display = if let Some(s) = current_stats {
+                            let (short, full, _) = st::format_stat_display(s, pref);
+                            Some((
+                                format!("{}: {}", pref.label(), short),
+                                format!("{}: {}", pref.label(), full),
+                            ))
                         } else {
                             None
                         };
 
-                        if let Some(ref label) = badge_label {
+                        if let Some((ref short_label, ref full_label)) = badge_display {
                             const BADGE_HALF_W: f32 = 55.0;
                             let space = (bar_rect.center().x - BADGE_HALF_W - left_edge).max(8.0);
                             ui.add_space(space);
@@ -1654,9 +1686,12 @@ impl ColominApp {
                                 let stat_icon = crate::ui::icons::icon(
                                     crate::ui::icons::stat_icon_name(pref), text_sec,
                                 ).fit_to_exact_size(egui::vec2(11.0, 11.0));
-                                let badge_btn = ui.add(
-                                    egui::Button::image_and_text(stat_icon, label.as_str()).small(),
+                                let mut badge_btn = ui.add(
+                                    egui::Button::image_and_text(stat_icon, short_label.as_str()).small(),
                                 );
+                                if short_label != full_label {
+                                    badge_btn = badge_btn.on_hover_text(full_label.as_str());
+                                }
                                 if badge_btn.clicked() {
                                     if egui::Popup::is_id_open(ui.ctx(), badge_id) {
                                         egui::Popup::close_id(ui.ctx(), badge_id);
@@ -1670,27 +1705,107 @@ impl ColominApp {
                                     egui::AboveOrBelow::Above,
                                     egui::PopupCloseBehavior::CloseOnClickOutside,
                                     |ui| {
-                                        ui.set_min_width(160.0);
+                                        ui.set_min_width(180.0);
+                                        let flash_id = egui::Id::new("stats_copy_flash");
+                                        let flash: Option<(crate::state::PreferredStat, std::time::Instant)> =
+                                            ui.ctx().data(|d| d.get_temp(flash_id));
                                         for &stat in crate::state::PreferredStat::ALL.iter() {
-                                            let (sv, _) = st::format_stat(s, stat);
+                                            let (short, full, _) = st::format_stat_display(s, stat);
                                             let is_active = pref == stat;
                                             let icon_color = if is_active { colors.accent } else { text_sec };
                                             let text_color = if is_active { colors.accent } else { text_pri };
                                             let sv_color = if is_active { colors.accent } else { text_sec };
                                             let lbl = egui::RichText::new(stat.label()).size(12.0).color(text_color);
-                                            if Self::menu_row(
-                                                ui,
-                                                crate::ui::icons::stat_icon_name(stat),
-                                                icon_color,
-                                                lbl,
-                                                is_active,
-                                                colors.accent,
+
+                                            // Custom row (inline rather than `menu_row`) so we
+                                            // can layer a hover-revealed copy button on top.
+                                            let row_h = 26.0;
+                                            let avail_w = ui.available_width();
+                                            let (rect, row_resp) = ui.allocate_exact_size(
+                                                egui::vec2(avail_w, row_h),
+                                                egui::Sense::click(),
+                                            );
+                                            let row_hovered = ui.rect_contains_pointer(rect);
+                                            let bg = if is_active {
+                                                egui::Color32::from_rgba_unmultiplied(
+                                                    colors.accent.r(), colors.accent.g(),
+                                                    colors.accent.b(), 28,
+                                                )
+                                            } else if row_hovered {
+                                                ui.visuals().widgets.hovered.weak_bg_fill
+                                            } else {
+                                                egui::Color32::TRANSPARENT
+                                            };
+                                            if bg != egui::Color32::TRANSPARENT {
+                                                ui.painter().rect_filled(rect, 4.0, bg);
+                                            }
+
+                                            let mut copy_clicked = false;
+                                            let inner = rect.shrink2(egui::vec2(8.0, 0.0));
+                                            ui.scope_builder(
+                                                egui::UiBuilder::new()
+                                                    .max_rect(inner)
+                                                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
                                                 |ui| {
-                                                    ui.add(egui::Label::new(
-                                                        egui::RichText::new(&sv).size(11.0).color(sv_color)
-                                                    ).selectable(false));
+                                                    ui.add(crate::ui::icons::icon(
+                                                        crate::ui::icons::stat_icon_name(stat),
+                                                        icon_color,
+                                                    ));
+                                                    ui.add_space(8.0);
+                                                    ui.add(egui::Label::new(lbl).selectable(false));
+                                                    ui.with_layout(
+                                                        egui::Layout::right_to_left(egui::Align::Center),
+                                                        |ui| {
+                                                            // Always lay out the copy button so the
+                                                            // value column doesn't jitter on hover.
+                                                            // Paint it on row hover, OR while the
+                                                            // post-click confirmation flash is active.
+                                                            let flashing = flash
+                                                                .map(|(s, t)| s == stat
+                                                                    && t.elapsed() < std::time::Duration::from_millis(1200))
+                                                                .unwrap_or(false);
+                                                            let (icon_tint, visible) = if flashing {
+                                                                (colors.accent, true)
+                                                            } else {
+                                                                (text_sec, row_hovered)
+                                                            };
+                                                            let copy_resp = ui.scope(|ui| {
+                                                                if !visible { ui.set_opacity(0.0); }
+                                                                let copy_icon = crate::ui::icons::icon(
+                                                                    "copy", icon_tint,
+                                                                ).fit_to_exact_size(egui::vec2(13.0, 13.0));
+                                                                ui.add(
+                                                                    egui::Button::image(copy_icon)
+                                                                        .small().frame(false),
+                                                                )
+                                                            }).inner;
+                                                            if row_hovered && copy_resp.clicked() {
+                                                                ui.ctx().copy_text(full.clone());
+                                                                ui.ctx().data_mut(|d| d.insert_temp(
+                                                                    flash_id,
+                                                                    (stat, std::time::Instant::now()),
+                                                                ));
+                                                                copy_clicked = true;
+                                                            }
+                                                            if flashing {
+                                                                ui.ctx().request_repaint_after(
+                                                                    std::time::Duration::from_millis(120),
+                                                                );
+                                                            }
+                                                            ui.add_space(4.0);
+                                                            let val_resp = ui.add(egui::Label::new(
+                                                                egui::RichText::new(&short)
+                                                                    .size(11.0).color(sv_color),
+                                                            ).selectable(false));
+                                                            if short != full {
+                                                                let _ = val_resp.on_hover_text(full.as_str());
+                                                            }
+                                                        },
+                                                    );
                                                 },
-                                            ).clicked() {
+                                            );
+
+                                            if row_resp.clicked() && !copy_clicked {
                                                 new_pref_stat = Some(stat);
                                                 egui::Popup::close_id(ui.ctx(), badge_id);
                                             }
@@ -1698,7 +1813,7 @@ impl ColominApp {
                                     },
                                 );
                             } else {
-                                ui.colored_label(text_sec, label);
+                                ui.colored_label(text_sec, short_label);
                             }
                         }
                     }

@@ -6,8 +6,14 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::state::{AppState, SelectionType};
+
+/// Check the cancel flag every this many records during async scans.
+/// 65,536 keeps atomic-load overhead negligible while bounding post-cancel
+/// work to ~tens of milliseconds even on multi-million-row files.
+const CANCEL_CHECK_INTERVAL: usize = 1 << 16;
 
 pub type Stats = (usize, usize, f64, f64, f64, f64, usize);
 
@@ -219,6 +225,76 @@ pub fn format_stat(stats: Stats, preferred: crate::state::PreferredStat) -> (Str
     }
 }
 
+/// Maximum visible character count before the displayed value gets abbreviated.
+/// The full-precision value remains available for tooltip/copy.
+const STAT_DISPLAY_MAX_CHARS: usize = 12;
+
+/// Return `(short, full, meaningful)` for the preferred stat. `short` is an
+/// abbreviated form (e.g. `1.23M`, `4.56B`) when the full value exceeds
+/// `STAT_DISPLAY_MAX_CHARS`; otherwise `short == full`.
+pub fn format_stat_display(
+    stats: Stats,
+    preferred: crate::state::PreferredStat,
+) -> (String, String, bool) {
+    let (full, meaningful) = format_stat(stats, preferred);
+    if !meaningful || full.chars().count() <= STAT_DISPLAY_MAX_CHARS {
+        return (full.clone(), full, meaningful);
+    }
+    let (_count, _num_count, sum, avg, min, max, char_len) = stats;
+    use crate::state::PreferredStat::*;
+    let short = match preferred {
+        Count  => abbrev_count(_count),
+        Sum    => abbrev_num(sum),
+        Avg    => abbrev_num(avg),
+        Min    => abbrev_num(min),
+        Max    => abbrev_num(max),
+        Length => abbrev_count(char_len),
+    };
+    (short, full, meaningful)
+}
+
+/// Compact form for a floating-point value: `1.23M`, `4.56B`, `2.5T`,
+/// scientific (`1.23e15`) for very large magnitudes. Strips trailing zeros.
+pub fn abbrev_num(n: f64) -> String {
+    if !n.is_finite() {
+        return format!("{}", n);
+    }
+    let abs = n.abs();
+    let sign = if n < 0.0 { "-" } else { "" };
+    let (scaled, suffix) = if abs >= 1e15 {
+        return format!("{:.2e}", n);
+    } else if abs >= 1e12 {
+        (abs / 1e12, "T")
+    } else if abs >= 1e9 {
+        (abs / 1e9, "B")
+    } else if abs >= 1e6 {
+        (abs / 1e6, "M")
+    } else if abs >= 1e3 {
+        (abs / 1e3, "K")
+    } else {
+        return format_num(n);
+    };
+    format!("{}{}{}", sign, trim_trailing_zeros(scaled), suffix)
+}
+
+/// Compact form for a usize count, reusing the float abbreviation rules.
+pub fn abbrev_count(n: usize) -> String {
+    if n < 1_000 {
+        return format_with_commas(n);
+    }
+    abbrev_num(n as f64)
+}
+
+fn trim_trailing_zeros(n: f64) -> String {
+    let s = format!("{:.2}", n);
+    if let Some(dot) = s.find('.') {
+        let trimmed = s.trim_end_matches('0').trim_end_matches('.');
+        if trimmed.len() == dot { s[..dot].to_string() } else { trimmed.to_string() }
+    } else {
+        s
+    }
+}
+
 
 // ── Async computation ─────────────────────────────────────────────────────────
 
@@ -318,6 +394,7 @@ fn compute_stats_streaming(
     snap: &StatsSnapshot,
     mut rows: Vec<(usize, u64)>,
     col_selector: &ColSelector,
+    cancel: &AtomicBool,
 ) -> Acc {
     use std::io::{BufReader, Seek, SeekFrom};
 
@@ -330,7 +407,10 @@ fn compute_stats_streaming(
     let mut reader = BufReader::with_capacity(256 * 1024, fh);
     let mut prev_offset: Option<u64> = None;
 
-    for (actual_row, offset) in rows {
+    for (i, (actual_row, offset)) in rows.into_iter().enumerate() {
+        if i % CANCEL_CHECK_INTERVAL == 0 && cancel.load(Ordering::Relaxed) {
+            return Acc::default();
+        }
         // Only seek if we're not already at the right position.
         // For contiguous rows the BufReader keeps the data hot.
         if prev_offset.map_or(true, |p| p != offset) {
@@ -406,6 +486,7 @@ fn compute_stats_sequential(
     first_actual: usize,
     last_actual: usize,
     col_selector: &ColSelector,
+    cancel: &AtomicBool,
 ) -> Acc {
     use std::io::{BufReader, Seek, SeekFrom};
 
@@ -426,6 +507,9 @@ fn compute_stats_sequential(
     let mut acc = Acc::default();
 
     for (row_idx, result) in csv_rdr.records().enumerate() {
+        if row_idx % CANCEL_CHECK_INTERVAL == 0 && cancel.load(Ordering::Relaxed) {
+            return Acc::default();
+        }
         let actual_row = first_actual + row_idx;
         if actual_row > last_actual {
             break;
@@ -464,24 +548,214 @@ fn compute_stats_sequential(
     acc
 }
 
-pub fn compute_stats_snapshot(snap: &StatsSnapshot) -> Stats {
+/// Inverse of a sort permutation: `inv[perm[i]] = i`. Used to map physical
+/// file rows back to logical (display) row indices for correct edit lookup
+/// during sequential reads.
+fn build_inv_perm(perm: &[usize]) -> Vec<usize> {
+    let mut inv = vec![0usize; perm.len()];
+    for (i, &p) in perm.iter().enumerate() {
+        if p < inv.len() {
+            inv[p] = i;
+        }
+    }
+    inv
+}
+
+/// Density (wanted rows / total rows) at which a single sequential file scan
+/// beats per-row seeks. Tuned for typical SSD seek (~100 µs) vs per-record
+/// parse (~few µs): roughly one full scan ≈ N/50 seeks.
+const SEQUENTIAL_DENSITY_THRESHOLD: f64 = 0.02;
+
+fn should_use_sequential(wanted_count: usize, total: usize) -> bool {
+    total > 0 && (wanted_count as f64 / total as f64) >= SEQUENTIAL_DENSITY_THRESHOLD
+}
+
+/// Sequential file scan with optional inverse permutation and a wanted bitset.
+/// Reads each record in physical order and accumulates only when the row's
+/// logical (actual) index is in `wanted`. Early-exits once every wanted row
+/// has been visited.
+fn compute_stats_sequential_filtered(
+    snap: &StatsSnapshot,
+    inv_perm: Option<&[usize]>,
+    wanted: &[bool],
+    mut remaining: usize,
+    col_selector: &ColSelector,
+    cancel: &AtomicBool,
+) -> Acc {
+    use std::io::{BufReader, Seek, SeekFrom};
+
+    let Some(&start_offset) = snap.row_offsets.first() else { return Acc::default() };
+    let Ok(fh) = std::fs::File::open(&snap.file_path) else { return Acc::default() };
+    let mut reader = BufReader::with_capacity(256 * 1024, fh);
+    if reader.seek(SeekFrom::Start(start_offset)).is_err() {
+        return Acc::default();
+    }
+
+    let mut csv_rdr = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .flexible(true)
+        .delimiter(snap.delimiter)
+        .from_reader(reader);
+
+    let mut acc = Acc::default();
+    let total = snap.total_rows;
+
+    for (phys, result) in csv_rdr.records().enumerate() {
+        if phys % CANCEL_CHECK_INTERVAL == 0 && cancel.load(Ordering::Relaxed) {
+            return Acc::default();
+        }
+        if phys >= total || remaining == 0 { break; }
+        let actual = inv_perm.and_then(|ip| ip.get(phys).copied()).unwrap_or(phys);
+        if actual >= wanted.len() || !wanted[actual] { continue; }
+        remaining -= 1;
+        let Ok(record) = result else { continue };
+
+        match col_selector {
+            ColSelector::All => {
+                for c in 0..snap.col_count {
+                    let val = snap.edits.get(&(actual, c))
+                        .cloned()
+                        .or_else(|| record.get(c).map(str::to_string));
+                    accumulate(val.as_ref(), &mut acc);
+                }
+            }
+            ColSelector::Range(mc, xc) => {
+                for c in *mc..=*xc {
+                    let phys_c = snap.snap_physical_col(c);
+                    let val = snap.edits.get(&(actual, phys_c))
+                        .cloned()
+                        .or_else(|| record.get(phys_c).map(str::to_string));
+                    accumulate(val.as_ref(), &mut acc);
+                }
+            }
+            ColSelector::Set(cols) => {
+                for &c in cols {
+                    let phys_c = snap.snap_physical_col(c);
+                    let val = snap.edits.get(&(actual, phys_c))
+                        .cloned()
+                        .or_else(|| record.get(phys_c).map(str::to_string));
+                    accumulate(val.as_ref(), &mut acc);
+                }
+            }
+        }
+    }
+    acc
+}
+
+/// Build a wanted-bitset of size `total` with `actuals` set to true.
+fn build_wanted_bitset(actuals: &[usize], total: usize) -> Vec<bool> {
+    let mut w = vec![false; total];
+    for &a in actuals {
+        if a < total { w[a] = true; }
+    }
+    w
+}
+
+/// Sequential file scan that resolves edit keys via an inverse sort permutation.
+/// Used for full-column stats when a sort is active and no filter is applied —
+/// every physical row is visited exactly once in file order.
+fn compute_stats_sequential_perm(
+    snap: &StatsSnapshot,
+    inv_perm: &[usize],
+    col_selector: &ColSelector,
+    cancel: &AtomicBool,
+) -> Acc {
+    use std::io::{BufReader, Seek, SeekFrom};
+
+    let Some(&start_offset) = snap.row_offsets.first() else { return Acc::default() };
+    let Ok(fh) = std::fs::File::open(&snap.file_path) else { return Acc::default() };
+    let mut reader = BufReader::with_capacity(256 * 1024, fh);
+    if reader.seek(SeekFrom::Start(start_offset)).is_err() {
+        return Acc::default();
+    }
+
+    let mut csv_rdr = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .flexible(true)
+        .delimiter(snap.delimiter)
+        .from_reader(reader);
+
+    let mut acc = Acc::default();
+    let total = inv_perm.len();
+
+    for (phys, result) in csv_rdr.records().enumerate() {
+        if phys % CANCEL_CHECK_INTERVAL == 0 && cancel.load(Ordering::Relaxed) {
+            return Acc::default();
+        }
+        if phys >= total { break; }
+        let actual = inv_perm.get(phys).copied().unwrap_or(phys);
+        let Ok(record) = result else { continue };
+
+        match col_selector {
+            ColSelector::All => {
+                for c in 0..snap.col_count {
+                    let val = snap.edits.get(&(actual, c))
+                        .cloned()
+                        .or_else(|| record.get(c).map(str::to_string));
+                    accumulate(val.as_ref(), &mut acc);
+                }
+            }
+            ColSelector::Range(mc, xc) => {
+                for c in *mc..=*xc {
+                    let phys_c = snap.snap_physical_col(c);
+                    let val = snap.edits.get(&(actual, phys_c))
+                        .cloned()
+                        .or_else(|| record.get(phys_c).map(str::to_string));
+                    accumulate(val.as_ref(), &mut acc);
+                }
+            }
+            ColSelector::Set(cols) => {
+                for &c in cols {
+                    let phys_c = snap.snap_physical_col(c);
+                    let val = snap.edits.get(&(actual, phys_c))
+                        .cloned()
+                        .or_else(|| record.get(phys_c).map(str::to_string));
+                    accumulate(val.as_ref(), &mut acc);
+                }
+            }
+        }
+    }
+    acc
+}
+
+pub fn compute_stats_snapshot(snap: &StatsSnapshot, cancel: &AtomicBool) -> Stats {
     let acc = match snap.selection_type {
         SelectionType::Cell => {
             let Some((mr, xr, mc, xc)) = snap.cell_range else {
                 return (0, 0, 0.0, 0.0, 0.0, 0.0, 0);
             };
+            let col_sel = ColSelector::Range(mc, xc);
             // Collect actual rows in display order.
             let actuals: Vec<usize> = (mr..=xr)
                 .filter_map(|r| display_to_actual(snap, r))
                 .collect();
-            // If no sort permutation the actual rows are consecutive file rows.
+            let covers_all_rows = snap.filter_indices.is_none()
+                && actuals.len() == snap.total_rows
+                && snap.total_rows > 0;
+            let no_filter = snap.filter_indices.is_none();
+
+            // No sort: actuals are consecutive file rows → fast sequential.
             if snap.sort_permutation.is_none() && !actuals.is_empty() {
-                compute_stats_sequential(snap, *actuals.first().unwrap(), *actuals.last().unwrap(), &ColSelector::Range(mc, xc))
+                compute_stats_sequential(snap, *actuals.first().unwrap(), *actuals.last().unwrap(), &col_sel, cancel)
+            } else if covers_all_rows && snap.sort_permutation.is_some() {
+                // Full file with sort — one sequential pass + inv_perm.
+                let inv = build_inv_perm(snap.sort_permutation.as_ref().unwrap());
+                compute_stats_sequential_perm(snap, &inv, &col_sel, cancel)
+            } else if no_filter
+                && snap.sort_permutation.is_some()
+                && should_use_sequential(actuals.len(), snap.total_rows)
+            {
+                // Sort + dense partial range — sequential scan with wanted bitset.
+                let inv = build_inv_perm(snap.sort_permutation.as_ref().unwrap());
+                let wanted = build_wanted_bitset(&actuals, snap.total_rows);
+                let count = actuals.len();
+                compute_stats_sequential_filtered(snap, Some(&inv), &wanted, count, &col_sel, cancel)
             } else {
+                // Sparse selection, or filter active → per-row scatter.
                 let rows: Vec<(usize, u64)> = actuals.into_iter()
                     .filter_map(|a| actual_to_file_offset(snap, a).map(|off| (a, off)))
                     .collect();
-                compute_stats_streaming(snap, rows, &ColSelector::Range(mc, xc))
+                compute_stats_streaming(snap, rows, &col_sel, cancel)
             }
         }
         SelectionType::Row => {
@@ -489,32 +763,43 @@ pub fn compute_stats_snapshot(snap: &StatsSnapshot) -> Stats {
                 .filter_map(|&r| display_to_actual(snap, r))
                 .collect();
             actuals.sort_unstable();
-            if snap.sort_permutation.is_none() && !actuals.is_empty() {
-                // Rows may not be contiguous — use scatter path (one file open, seek per row).
-                let rows: Vec<(usize, u64)> = actuals.into_iter()
-                    .filter_map(|a| actual_to_file_offset(snap, a).map(|off| (a, off)))
-                    .collect();
-                compute_stats_streaming(snap, rows, &ColSelector::All)
+            let no_filter = snap.filter_indices.is_none();
+
+            if no_filter && should_use_sequential(actuals.len(), snap.total_rows) {
+                // Dense row selection — one sequential pass with wanted bitset.
+                let inv = snap.sort_permutation.as_ref().map(|p| build_inv_perm(p));
+                let wanted = build_wanted_bitset(&actuals, snap.total_rows);
+                let count = actuals.len();
+                compute_stats_sequential_filtered(snap, inv.as_deref(), &wanted, count, &ColSelector::All, cancel)
             } else {
+                // Sparse — per-row scatter.
                 let rows: Vec<(usize, u64)> = actuals.into_iter()
                     .filter_map(|a| actual_to_file_offset(snap, a).map(|off| (a, off)))
                     .collect();
-                compute_stats_streaming(snap, rows, &ColSelector::All)
+                compute_stats_streaming(snap, rows, &ColSelector::All, cancel)
             }
         }
         SelectionType::Column => {
             let total = display_row_count(snap);
+            let col_sel = ColSelector::Set(snap.selected_columns.clone());
             // Fast path: no permutation → rows 0..total are consecutive in the file.
             if snap.sort_permutation.is_none() {
                 let first_actual = display_to_actual(snap, if snap.header_row_enabled { 0 } else { 1 });
                 let last_actual  = display_to_actual(snap, total.saturating_sub(1));
                 if let (Some(first), Some(last)) = (first_actual, last_actual) {
-                    compute_stats_sequential(snap, first, last, &ColSelector::Set(snap.selected_columns.clone()))
+                    compute_stats_sequential(snap, first, last, &col_sel, cancel)
                 } else {
                     Acc::default()
                 }
+            } else if snap.filter_indices.is_none() {
+                // Sort is active but no filter — every physical row contributes.
+                // Read the file once in physical order and use the inverse
+                // permutation to look up edits at the right logical row.
+                let inv = build_inv_perm(snap.sort_permutation.as_ref().unwrap());
+                compute_stats_sequential_perm(snap, &inv, &col_sel, cancel)
             } else {
-                // Permuted: rows are scattered — use scatter path.
+                // Filter is active (with or without sort) — rows are a true subset.
+                // Fall back to scatter.
                 let rows: Vec<(usize, u64)> = (0..total)
                     .filter_map(|r| {
                         let actual = display_to_actual(snap, r)?;
@@ -522,7 +807,7 @@ pub fn compute_stats_snapshot(snap: &StatsSnapshot) -> Stats {
                         Some((actual, off))
                     })
                     .collect();
-                compute_stats_streaming(snap, rows, &ColSelector::Set(snap.selected_columns.clone()))
+                compute_stats_streaming(snap, rows, &col_sel, cancel)
             }
         }
     };

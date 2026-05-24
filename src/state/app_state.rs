@@ -107,8 +107,14 @@ pub struct AppState {
     pub computed_stats: Option<(usize, usize, f64, f64, f64, f64, usize)>,
     /// Whether stats are currently being computed
     pub computing_stats: bool,
-    /// Key that identifies the current stats computation (to avoid stale results)
+    /// Whether a sort is currently running on a background thread
+    pub is_sorting: bool,
+    /// Key that identifies the last completed stats computation (used to detect stale results).
     pub stats_key: String,
+    /// Key of the stats computation currently in flight (empty when none).
+    /// Lets the dispatcher tell "already computing this selection" apart from
+    /// "selection changed; need to cancel + restart".
+    pub stats_pending_key: String,
     // Row cache
     pub row_cache: HashMap<usize, Vec<String>>,
     row_cache_order: RefCell<VecDeque<usize>>,
@@ -200,7 +206,9 @@ impl AppState {
             stat_badge_center_x: 0.0,
             computed_stats: None,
             computing_stats: false,
+            is_sorting: false,
             stats_key: String::new(),
+            stats_pending_key: String::new(),
             row_cache: HashMap::new(),
             row_cache_order: RefCell::new(VecDeque::new()),
             cache_version: 0,
@@ -481,6 +489,7 @@ impl AppState {
         self.computed_stats = None;
         self.computing_stats = false;
         self.stats_key.clear();
+        self.stats_pending_key.clear();
     }
 
     pub fn has_unsaved_changes(&self) -> bool {

@@ -443,6 +443,13 @@ impl TableView {
         let content_h_out   = std::cell::Cell::new(self.v_content_h);
         let viewport_h_out  = std::cell::Cell::new(self.v_viewport_h);
 
+        // Captures each rendered body row's actual screen Y + height during render.
+        // Tuple: (display_row, top_y, height). Consumed by the gutter overlay and the
+        // cell-selection accent so they align pixel-perfectly with body cells —
+        // independent of any drift between state.row_top() and egui_extras'
+        // internal prefix-sum, or mid-frame scroll/height changes.
+        let row_ys = std::cell::Cell::new(Vec::<(usize, f32, f32)>::new());
+
         // Precompute cell-selection range for border highlights (gutter right, header bottom).
         let cell_sel_range = if state.selection_type == Some(SelectionType::Cell) {
             state.selection_range()
@@ -582,12 +589,14 @@ impl TableView {
                             let phys_col = state.display_to_physical_col(col_idx);
                             let is_sorted_here = sort_col == Some(phys_col);
                             let color = if is_sorted_here { accent } else { text_pri };
-                            // Reserve the right 5px for the resize handle so it gets
-                            // exclusive hover/drag priority (no rect overlap).
+                            // Reserve the right 5px for the resize handle, and an
+                            // additional ~15px for the sort icon when sorted so it
+                            // gets its own click target.
+                            let click_right = if is_sorted_here { rect.max.x - 20.0 } else { rect.max.x - 5.0 };
                             let hdr_id = egui::Id::new(("hdr", col_idx as u64));
                             let click_rect = egui::Rect::from_min_max(
                                 rect.min,
-                                egui::pos2(rect.max.x - 5.0, rect.max.y),
+                                egui::pos2(click_right, rect.max.y),
                             );
                             let resp = ui.interact(click_rect, hdr_id, egui::Sense::click_and_drag());
 
@@ -640,6 +649,25 @@ impl TableView {
                                     egui::vec2(14.0, 14.0),
                                 );
                                 crate::ui::icons::icon(icon_name, color).paint_at(ui, icon_rect);
+
+                                // Click-to-toggle sort direction. Hit target spans the
+                                // 15px reserved between click_rect and the resize handle.
+                                let icon_hit = egui::Rect::from_min_max(
+                                    egui::pos2(rect.max.x - 20.0, rect.min.y),
+                                    egui::pos2(rect.max.x - 5.0, rect.max.y),
+                                );
+                                let icon_id = egui::Id::new(("hdr_sort_icon", col_idx as u64));
+                                let icon_resp = ui.interact(icon_hit, icon_id, egui::Sense::click());
+                                if icon_resp.hovered() {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                }
+                                if icon_resp.clicked() {
+                                    if let Some((er, ec, ev)) = self.editing.take() {
+                                        commit_edit(state, er, ec, ev);
+                                    }
+                                    let next_asc = !(sort_asc == Some(true));
+                                    state.pending_sort = Some((phys_col, next_asc));
+                                }
                             }
 
                             if resp.double_clicked() && header_enabled {
@@ -695,6 +723,16 @@ impl TableView {
                                 {
                                     state.pending_sort = Some((phys_col, false));
                                     ui.close();
+                                }
+                                if sort_col.is_some() {
+                                    if icon_menu_item(ui, "x", "Remove Sort", ic, tc, false).clicked() {
+                                        state.sort_state = None;
+                                        state.pending_sort = None;
+                                        if let Some(f) = state.file.as_mut() {
+                                            f.sort_permutation = None;
+                                        }
+                                        ui.close();
+                                    }
                                 }
                                 ui.separator();
                                 if col_idx > 0 {
@@ -797,9 +835,25 @@ impl TableView {
                 let heights: Vec<f32> = (0..row_count)
                     .map(|r| state.row_height_for(r))
                     .collect();
+                // Append one empty row of bottom padding so the last data row has
+                // breathing room above the horizontal scrollbar. This extends
+                // body_out.content_size.y by one row, which the custom scrollbar
+                // picks up automatically.
+                let pad = if row_count > 0 { Some(state.row_height) } else { None };
                 let search_query_lower = state.search_query.to_lowercase();
-                body.heterogeneous_rows(heights.into_iter(), |mut row| {
+                body.heterogeneous_rows(heights.into_iter().chain(pad), |mut row| {
                     let display_row = row.index();
+
+                    // Bottom padding row: render empty cells, no fills, no
+                    // interactions. We still call row.col() col_count times so the
+                    // strip is fully allocated.
+                    if display_row >= row_count {
+                        for _ in 0..col_count {
+                            row.col(|_ui| {});
+                        }
+                        return;
+                    }
+
                     let _row_h = state.row_height_for(display_row);
 
                     let row_sel = state.selection_type == Some(SelectionType::Row)
@@ -808,6 +862,16 @@ impl TableView {
                     // ── Data cells ──
                     for col_idx in 0..col_count {
                         row.col(|ui| {
+                            // Capture this row's actual on-screen Y from col 0 — the
+                            // gutter overlay and accent override use these positions
+                            // so they stay in sync with body cells even when
+                            // egui_extras' internal layout drifts from state.row_top().
+                            if col_idx == 0 {
+                                let cr = ui.max_rect();
+                                let mut v = row_ys.take();
+                                v.push((display_row, cr.top(), cr.height()));
+                                row_ys.set(v);
+                            }
                             let cell_sel = state.is_cell_selected(display_row, col_idx);
                             let is_cursor = state.selection_anchor
                                 .map(|a| a.row == display_row && a.col == col_idx)
@@ -1037,6 +1101,16 @@ impl TableView {
                                         state.pending_sort = Some((col_idx, false));
                                         ui.close();
                                     }
+                                    if sort_col.is_some() {
+                                        if icon_menu_item(ui, "x", "Remove Sort", ic, tc, false).clicked() {
+                                            state.sort_state = None;
+                                            state.pending_sort = None;
+                                            if let Some(f) = state.file.as_mut() {
+                                                f.sort_permutation = None;
+                                            }
+                                            ui.close();
+                                        }
+                                    }
                                     ui.separator();
                                     if icon_menu_item(ui, "chevron-up", "Reset Row Height", ic, tc, false).clicked() {
                                         state.row_heights.remove(&display_row);
@@ -1119,16 +1193,37 @@ impl TableView {
                         let col_selected = state.selection_type == Some(SelectionType::Column)
                             && state.selected_columns.contains(col_idx);
                         painter.rect_filled(*rect, 0.0, if col_selected { sel_color } else { header_bg });
+                        let phys = state.display_to_physical_col(*col_idx);
+                        let is_sorted_here = sort_col == Some(phys);
+                        let label_color = if is_sorted_here { accent } else { text_pri };
                         if let Some(name) = col_names.get(*col_idx) {
                             if !name.is_empty() {
-                                painter.text(
+                                let label_max_x = if is_sorted_here { rect.right() - 20.0 } else { rect.right() - 4.0 };
+                                let text_clip = egui::Rect::from_min_max(
+                                    rect.min,
+                                    egui::pos2(label_max_x, rect.max.y),
+                                );
+                                painter.clone().with_clip_rect(text_clip).text(
                                     egui::pos2(rect.left() + 8.0, rect.center().y),
                                     egui::Align2::LEFT_CENTER,
                                     name,
                                     egui::FontId::proportional(state.font_size - 1.0),
-                                    text_pri,
+                                    label_color,
                                 );
                             }
+                        }
+                        if is_sorted_here {
+                            let icon_name = if sort_asc == Some(true) { "sort-asc" } else { "sort-desc" };
+                            let icon_rect = egui::Rect::from_center_size(
+                                egui::pos2(rect.right() - 11.0, rect.center().y),
+                                egui::vec2(14.0, 14.0),
+                            );
+                            let overlay_ui = ui.new_child(
+                                egui::UiBuilder::new()
+                                    .max_rect(*rect)
+                                    .layer_id(layer),
+                            );
+                            crate::ui::icons::icon(icon_name, accent).paint_at(&overlay_ui, icon_rect);
                         }
                     }
 
@@ -1420,6 +1515,25 @@ impl TableView {
                 header_sep,
             );
 
+            // Background-activity indicator: a single accent-color dot in the
+            // neutral zone whose alpha pulses at ~1 Hz. Shown when loading a
+            // file, computing async stats, or running a sort. Replaces the
+            // textual "Computing…" badge in the status bar.
+            let busy = state.is_loading || state.computing_stats || state.is_sorting;
+            if busy {
+                let t = ui.ctx().input(|i| i.time);
+                let phase = ((t * std::f64::consts::PI * 2.0).sin() * 0.5 + 0.5) as f32;
+                let alpha = (70.0 + (230.0 - 70.0) * phase) as u8;
+                let dot_color = egui::Color32::from_rgba_unmultiplied(
+                    accent.r(), accent.g(), accent.b(), alpha,
+                );
+                let dot_painter = ui.ctx()
+                    .layer_painter(gutter_layer)
+                    .with_clip_rect(top_strip_rect);
+                dot_painter.circle_filled(top_strip_rect.center(), 3.5, dot_color);
+                ui.ctx().request_repaint();
+            }
+
             // Click on the neutral zone selects all cells (same as Cmd+A).
             let corner_resp = ui.interact(
                 top_strip_rect,
@@ -1449,14 +1563,32 @@ impl TableView {
             let painter = ui.ctx().layer_painter(gutter_layer).with_clip_rect(body_rect);
 
             state.ensure_row_layout();
-            let body_h   = body_rect.height();
-            let first_row = state.row_at_y(v_scroll, row_count);
-            let last_row  = state.row_at_y((v_scroll + body_h + state.row_height).min(state.row_layout.total_height), row_count)
-                .min(row_count.saturating_sub(1));
 
-            for display_row in first_row..=last_row {
-                let row_h    = state.row_height_for(display_row);
-                let screen_y = body_rect.top() + state.row_top(display_row) - v_scroll;
+            // Prefer the body-captured row Ys (pixel-perfect alignment with body cells).
+            // Fall back to state-derived positions only on the very first frame, when the
+            // body hasn't rendered into row_ys yet.
+            let rendered_rows: Vec<(usize, f32, f32)> = {
+                let cap = row_ys.take();
+                if !cap.is_empty() {
+                    cap
+                } else {
+                    let body_h    = body_rect.height();
+                    let first_row = state.row_at_y(v_scroll, row_count);
+                    let last_row  = state.row_at_y(
+                        (v_scroll + body_h + state.row_height).min(state.row_layout.total_height),
+                        row_count,
+                    ).min(row_count.saturating_sub(1));
+                    (first_row..=last_row)
+                        .map(|r| (
+                            r,
+                            body_rect.top() + state.row_top(r) - v_scroll,
+                            state.row_height_for(r),
+                        ))
+                        .collect()
+                }
+            };
+
+            for (display_row, screen_y, row_h) in rendered_rows.iter().copied() {
                 if screen_y >= body_rect.bottom() { break; }
                 if screen_y + row_h <= body_rect.top() { continue; }
 
@@ -1660,6 +1792,8 @@ impl TableView {
                 }
             }
 
+            // Hand the rendered row Ys to the accent-override block below.
+            row_ys.set(rendered_rows);
         }
 
         // Gutter separator — 1px line at the left edge of the first data column.
@@ -1681,6 +1815,8 @@ impl TableView {
         // Accent override for rows inside the cell-selection range.
         // Skip when the selection starts at col 0 — the blue cells flush against
         // the gutter already make the selection obvious.
+        // Painted onto the gutter_sep layer so it sits above the base sep line
+        // (the sep layer is move_to_top'd at the end of show()).
         if let Some((min_r, max_r, _, _)) = cell_sel_range.filter(|&(_, _, min_c, _)| min_c > 0) {
             // header_bottom_y_last is an absolute screen Y (see body_rect setup above).
             let body_top = if self.header_bottom_y_last > 0.0 {
@@ -1688,14 +1824,14 @@ impl TableView {
             } else {
                 panel_rect.top() + 30.0
             };
-            let v_scroll = self.v_scroll_y;
-            state.ensure_row_layout();
-            for sel_row in min_r..=max_r {
-                let row_h = state.row_height_for(sel_row);
-                let scr_y = body_top + state.row_top(sel_row) - v_scroll;
+            // Walk the body-captured row Ys so the accent aligns with the actual cells.
+            let accent_painter = ui.ctx().layer_painter(sep_layer);
+            let rendered_rows = row_ys.take();
+            for (display_row, scr_y, row_h) in rendered_rows.iter().copied() {
+                if display_row < min_r || display_row > max_r { continue; }
                 if scr_y >= panel_rect.max.y { break; }
                 if scr_y + row_h <= body_top { continue; }
-                ui.painter().rect_filled(
+                accent_painter.rect_filled(
                     egui::Rect::from_min_max(
                         egui::pos2(sep_x, scr_y.max(body_top)),
                         egui::pos2(sep_x + 1.0, (scr_y + row_h).min(panel_rect.max.y)),
