@@ -63,7 +63,9 @@ jobs:
 
       # Preflight: signing and notarization are gated on the presence of
       # secrets. `secrets.*` can't be used in `if:`, so we surface them as step
-      # outputs via env-loaded checks.
+      # outputs via env-loaded checks. Notarization is *additionally* skipped
+      # for `-rc*` tags so iterating on the cross-platform pipeline doesn't
+      # burn Apple's notary queue. Final tags (v0.2.0 etc.) still notarize.
       - name: Preflight signing config
         id: pre
         env:
@@ -71,7 +73,11 @@ jobs:
           P8:   ${{ secrets.AC_API_KEY_P8 }}
         run: |
           [ -n "$CERT" ] && echo "has_cert=true" >> "$GITHUB_OUTPUT"
-          [ -n "$P8" ]   && echo "has_key=true"  >> "$GITHUB_OUTPUT"
+          if [ -n "$P8" ] && [[ "$GITHUB_REF_NAME" != *-rc* ]]; then
+            echo "has_key=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Notarization skipped: $GITHUB_REF_NAME is an rc tag or no key configured."
+          fi
 
       # Write the App Store Connect API key to disk so cargo-packager can read
       # it via APPLE_API_KEY_PATH during notarization.
@@ -87,16 +93,30 @@ jobs:
           chmod 600 "$KEY_PATH"
           echo "key_path=$KEY_PATH" >> "$GITHUB_OUTPUT"
 
-      # cargo-packager reads APPLE_CERTIFICATE + APPLE_CERTIFICATE_PASSWORD
-      # to import the signing cert into a temp keychain itself; we just hand it
-      # the env vars. Notarization picks up APPLE_API_KEY/_ISSUER/_KEY_PATH.
-      - name: Package (.app + .dmg, signed + notarized)
+      # Export notarization env vars only when has_key is true. Setting any of
+      # APPLE_API_KEY/_ISSUER/_KEY_PATH to an empty string still trips
+      # cargo-packager into attempting notarization (it sees var-is-set, then
+      # fails on the empty path). $GITHUB_ENV is the only way to *not* set them
+      # at all in the next step.
+      - name: Export notarization env (when has_key)
+        if: ${{ steps.pre.outputs.has_key == 'true' }}
+        env:
+          KEY_ID:    ${{ secrets.AC_API_KEY_ID }}
+          ISSUER_ID: ${{ secrets.AC_API_KEY_ISSUER_ID }}
+          KEY_PATH:  ${{ steps.notary.outputs.key_path }}
+        run: |
+          echo "APPLE_API_KEY=$KEY_ID"        >> "$GITHUB_ENV"
+          echo "APPLE_API_ISSUER=$ISSUER_ID"  >> "$GITHUB_ENV"
+          echo "APPLE_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+
+      # cargo-packager reads APPLE_CERTIFICATE + APPLE_CERTIFICATE_PASSWORD to
+      # import the signing cert into a temp keychain itself. Notarization picks
+      # up APPLE_API_KEY/_ISSUER/_KEY_PATH from the env exported above (only
+      # set when has_key is true).
+      - name: Package (.app + .dmg, signed; notarized when has_key)
         env:
           APPLE_CERTIFICATE:          ${{ secrets.MACOS_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
-          APPLE_API_KEY:              ${{ secrets.AC_API_KEY_ID }}
-          APPLE_API_ISSUER:           ${{ secrets.AC_API_KEY_ISSUER_ID }}
-          APPLE_API_KEY_PATH:         ${{ steps.notary.outputs.key_path }}
         run: cargo packager --release --formats app,dmg
 
       - name: Rename DMG to stable asset name
@@ -187,6 +207,21 @@ jobs:
 
       - name: Install cargo-packager
         run: cargo install cargo-packager --locked
+
+      # WiX/MSI versions must be `major.minor.patch[.build]` with every
+      # component numeric (and ≤ 65535). Cargo accepts SemVer prereleases like
+      # "0.2.0-rc1" but WiX rejects them. Strip any prerelease/build suffix
+      # from Cargo.toml's `version = "..."` line *for the MSI build only*.
+      # The .deb / .AppImage / .dmg builds use the unmodified version from
+      # main / their own runners, so cross-arch parity is preserved.
+      - name: Patch version for MSI (strip prerelease suffix)
+        shell: pwsh
+        run: |
+          $path = "Cargo.toml"
+          $content = Get-Content $path -Raw
+          $patched = $content -replace '(?m)^version = "([0-9]+\.[0-9]+\.[0-9]+)(?:-[^"]+)?"', 'version = "$1"'
+          Set-Content -Path $path -Value $patched -NoNewline
+          Get-Content $path | Select-String '^version' | Select-Object -First 1
 
       - name: Build release
         run: cargo build --release
