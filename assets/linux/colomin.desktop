@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Colomin
+GenericName=CSV Editor
+Comment=A native CSV editor built with egui
+Exec=colomin %F
+Icon=colomin
+Terminal=false
+Categories=Office;Spreadsheet;Utility;
+MimeType=text/csv;text/tab-separated-values;
+Keywords=csv;spreadsheet;table;data;
+StartupNotify=true
+StartupWMClass=Colomin

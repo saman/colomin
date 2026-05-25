@@ -85,6 +85,27 @@ impl TabState {
 
 // ── App config (persisted) ────────────────────────────────────────────────────
 
+/// Per-OS config directory for Colomin.
+///
+/// On Unix (macOS + Linux) we use `$HOME/.config/colomin/` — preserving the
+/// pre-cross-platform path so existing users keep their settings. On Windows
+/// we use `%APPDATA%\colomin\` via the standard `dirs` lookup.
+fn colomin_config_dir() -> std::path::PathBuf {
+    #[cfg(unix)]
+    {
+        dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(".config")
+            .join("colomin")
+    }
+    #[cfg(windows)]
+    {
+        dirs::config_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("colomin")
+    }
+}
+
 fn default_tab_mode() -> bool { true }
 fn default_font_size() -> f32 { 12.0 }
 fn default_ui_scale() -> f32 { 1.0 }
@@ -117,9 +138,7 @@ impl Default for AppConfig {
 
 impl AppConfig {
     fn path() -> std::path::PathBuf {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        std::path::Path::new(&home)
-            .join(".config").join("colomin").join("settings.json")
+        colomin_config_dir().join("settings.json")
     }
 
     fn load() -> Self {
@@ -165,9 +184,7 @@ struct FileSettingsStore(std::collections::HashMap<String, FileSettings>);
 
 impl FileSettingsStore {
     fn path() -> std::path::PathBuf {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        std::path::Path::new(&home)
-            .join(".config").join("colomin").join("file_settings.json")
+        colomin_config_dir().join("file_settings.json")
     }
 
     fn load() -> Self {
@@ -1034,7 +1051,7 @@ impl eframe::App for ColominApp {
 
         if open_log {
             if let Some(path) = crate::debug_log::current_log_path() {
-                let _ = std::process::Command::new("open").arg(&path).spawn();
+                let _ = opener::open(&path);
             }
         }
 
@@ -1483,6 +1500,13 @@ impl ColominApp {
         ctx.set_fonts(fonts);
     }
 
+    /// Show `path` in the system file manager.
+    ///
+    /// - macOS: Finder, highlighting the file (`open -R`).
+    /// - Windows: Explorer, highlighting the file (`explorer /select,`).
+    /// - Linux: opens the *containing directory* (xdg-open via `opener`).
+    ///   Per-file highlighting in nautilus/dolphin/etc. would require a
+    ///   D-Bus call to `org.freedesktop.FileManager1`, deferred for now.
     fn reveal_in_finder(path: &std::path::Path) {
         #[cfg(target_os = "macos")]
         {
@@ -1491,9 +1515,17 @@ impl ColominApp {
                 .arg(path)
                 .spawn();
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
         {
-            let _ = path; // silence unused on non-mac
+            let _ = std::process::Command::new("explorer.exe")
+                .arg(format!("/select,{}", path.display()))
+                .spawn();
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            if let Some(dir) = path.parent() {
+                let _ = opener::open(dir);
+            }
         }
     }
 

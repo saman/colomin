@@ -9,27 +9,32 @@ permissions:
   contents: write
 
 jobs:
-  build-macos:
-    name: Build macOS universal DMG
-    runs-on: macos-14
+  # ── Shared tag-version check (fails fast across all platforms) ──────────────
+  verify-version:
+    name: Verify tag matches Cargo.toml
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Derive version from tag
-        id: ver
+      - uses: actions/checkout@v4
+      - id: ver
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Verify tag matches Cargo.toml version
+      - name: Verify
         run: |
           TAG_VERSION="${{ steps.ver.outputs.version }}"
           CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/version *= *"([^"]+)"/\1/')
-          echo "Tag version:   $TAG_VERSION"
-          echo "Cargo version: $CARGO_VERSION"
           if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
-            echo "::error::Tag v$TAG_VERSION does not match Cargo.toml version $CARGO_VERSION. Bump Cargo.toml and retag."
+            echo "::error::Tag v$TAG_VERSION does not match Cargo.toml version $CARGO_VERSION."
             exit 1
           fi
+
+  # ── macOS: universal .app + .dmg, signed + notarized ───────────────────────
+  build-macos:
+    name: macOS universal (.dmg + .app)
+    runs-on: macos-14
+    needs: verify-version
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -38,6 +43,9 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked
 
       - name: Build arm64
         run: cargo build --release --target aarch64-apple-darwin
@@ -53,66 +61,21 @@ jobs:
             target/x86_64-apple-darwin/release/colomin
           lipo -info target/release/colomin
 
-      - name: Bundle .app
-        env:
-          SKIP_BUILD: "1"
-        run: ./scripts/bundle.sh
-
-      # ----- Code signing & notarization -----
-      # All steps below are skipped when the Apple secrets are not configured,
-      # so unsigned builds still publish. Once MACOS_CERTIFICATE and the
-      # AC_API_KEY_* secrets are set, signing and notarization activate
-      # automatically. See docs/NOTARIZATION.md for setup.
-      #
-      # NOTE: `secrets.*` cannot be referenced directly in step `if:`
-      # conditions. The preflight step below loads each into env, then exports
-      # boolean outputs that the gated steps check.
-
+      # Preflight: signing and notarization are gated on the presence of
+      # secrets. `secrets.*` can't be used in `if:`, so we surface them as step
+      # outputs via env-loaded checks.
       - name: Preflight signing config
         id: pre
         env:
-          MC: ${{ secrets.MACOS_CERTIFICATE }}
-          P8: ${{ secrets.AC_API_KEY_P8 }}
+          CERT: ${{ secrets.MACOS_CERTIFICATE }}
+          P8:   ${{ secrets.AC_API_KEY_P8 }}
         run: |
-          if [ -n "$MC" ]; then echo "has_cert=true" >> "$GITHUB_OUTPUT"; fi
-          if [ -n "$P8" ]; then echo "has_key=true"  >> "$GITHUB_OUTPUT"; fi
+          [ -n "$CERT" ] && echo "has_cert=true" >> "$GITHUB_OUTPUT"
+          [ -n "$P8" ]   && echo "has_key=true"  >> "$GITHUB_OUTPUT"
 
-      - name: Set up signing keychain
-        if: ${{ steps.pre.outputs.has_cert == 'true' }}
-        id: keychain
-        env:
-          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
-          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
-          KEYCHAIN_PWD: ${{ secrets.KEYCHAIN_PWD }}
-        run: |
-          KEYCHAIN_PATH="$RUNNER_TEMP/sign.keychain-db"
-          CERT_PATH="$RUNNER_TEMP/cert.p12"
-
-          echo "$MACOS_CERTIFICATE" | base64 -d > "$CERT_PATH"
-
-          security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
-          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" \
-              -P "$MACOS_CERTIFICATE_PWD" \
-              -T /usr/bin/codesign -T /usr/bin/productsign
-          security set-key-partition-list \
-              -S apple-tool:,apple:,codesign: \
-              -s -k "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
-          security list-keychains -d user -s "$KEYCHAIN_PATH" \
-              $(security list-keychains -d user | tr -d '"')
-          rm -f "$CERT_PATH"
-
-          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
-              | awk -F'"' '/Developer ID Application/ {print $2; exit}')
-          if [ -z "$IDENTITY" ]; then
-            echo "::error::No 'Developer ID Application' identity found in imported cert."
-            exit 1
-          fi
-          echo "identity=$IDENTITY" >> "$GITHUB_OUTPUT"
-          echo "Imported identity: $IDENTITY"
-
-      - name: Set up notary API key
+      # Write the App Store Connect API key to disk so cargo-packager can read
+      # it via APPLE_API_KEY_PATH during notarization.
+      - name: Materialize notary API key
         if: ${{ steps.pre.outputs.has_key == 'true' }}
         id: notary
         env:
@@ -124,61 +87,128 @@ jobs:
           chmod 600 "$KEY_PATH"
           echo "key_path=$KEY_PATH" >> "$GITHUB_OUTPUT"
 
-      - name: Sign .app
-        if: ${{ steps.keychain.outputs.identity != '' }}
+      # cargo-packager reads APPLE_CERTIFICATE + APPLE_CERTIFICATE_PASSWORD
+      # to import the signing cert into a temp keychain itself; we just hand it
+      # the env vars. Notarization picks up APPLE_API_KEY/_ISSUER/_KEY_PATH.
+      - name: Package (.app + .dmg, signed + notarized)
         env:
-          SIGNING_IDENTITY: ${{ steps.keychain.outputs.identity }}
-        run: ./scripts/sign-app.sh target/release/Colomin.app
+          APPLE_CERTIFICATE:          ${{ secrets.MACOS_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          APPLE_API_KEY:              ${{ secrets.AC_API_KEY_ID }}
+          APPLE_API_ISSUER:           ${{ secrets.AC_API_KEY_ISSUER_ID }}
+          APPLE_API_KEY_PATH:         ${{ steps.notary.outputs.key_path }}
+        run: cargo packager --release --formats app,dmg
 
-      - name: Notarize and staple .app
-        if: ${{ steps.keychain.outputs.identity != '' && steps.notary.outputs.key_path != '' }}
-        env:
-          APPLE_API_KEY_PATH: ${{ steps.notary.outputs.key_path }}
-          APPLE_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
-          APPLE_API_ISSUER_ID: ${{ secrets.AC_API_KEY_ISSUER_ID }}
-        run: ./scripts/notarize.sh target/release/Colomin.app
-
-      - name: Create DMG
+      - name: Rename DMG to stable asset name
         run: |
-          VERSION="${{ steps.ver.outputs.version }}"
-          STAGING="$(mktemp -d)/dmg"
-          mkdir -p "$STAGING"
-          cp -R "target/release/Colomin.app" "$STAGING/"
-          ln -s /Applications "$STAGING/Applications"
-          # Keep the asset name stable so /releases/latest/download/Colomin.dmg
-          # always resolves. The version lives in the release name/tag.
-          DMG_PATH="Colomin.dmg"
-          hdiutil create \
-            -volname "Colomin ${VERSION}" \
-            -srcfolder "$STAGING" \
-            -ov -format UDZO \
-            "$DMG_PATH"
-          echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
+          mv dist/*.dmg dist/Colomin.dmg
+          ls -la dist/
 
-      - name: Sign DMG
-        if: ${{ steps.keychain.outputs.identity != '' }}
-        env:
-          SIGNING_IDENTITY: ${{ steps.keychain.outputs.identity }}
-        run: ./scripts/sign-app.sh "$DMG_PATH"
-
-      - name: Notarize and staple DMG
-        if: ${{ steps.keychain.outputs.identity != '' && steps.notary.outputs.key_path != '' }}
-        env:
-          APPLE_API_KEY_PATH: ${{ steps.notary.outputs.key_path }}
-          APPLE_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
-          APPLE_API_ISSUER_ID: ${{ secrets.AC_API_KEY_ISSUER_ID }}
-        run: ./scripts/notarize.sh "$DMG_PATH"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: Colomin-macos-universal
-          path: ${{ env.DMG_PATH }}
+          path: dist/Colomin.dmg
 
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.DMG_PATH }}
+          files: dist/Colomin.dmg
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+
+  # ── Linux: .deb + .AppImage ────────────────────────────────────────────────
+  build-linux:
+    name: Linux (.deb + .AppImage)
+    runs-on: ubuntu-22.04
+    needs: verify-version
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # eframe runtime deps (GTK + xkbcommon + fontconfig + Wayland/X11 baseline)
+      # plus AppImage tooling (fuse for AppImage runtime, file utils).
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev libxkbcommon-dev libssl-dev libfontconfig1-dev \
+            libwayland-dev libxcb1-dev libx11-dev \
+            file fuse libfuse2 desktop-file-utils
+
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Package (.deb + .AppImage)
+        run: cargo packager --release --formats deb,appimage
+
+      - name: Rename artifacts to stable asset names
+        run: |
+          mv dist/*.deb dist/Colomin.deb
+          mv dist/*.AppImage dist/Colomin-x86_64.AppImage
+          ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Colomin-linux
+          path: |
+            dist/Colomin.deb
+            dist/Colomin-x86_64.AppImage
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/Colomin.deb
+            dist/Colomin-x86_64.AppImage
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+
+  # ── Windows: .msi via WiX ──────────────────────────────────────────────────
+  build-windows:
+    name: Windows (.msi)
+    runs-on: windows-latest
+    needs: verify-version
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Package (.msi)
+        run: cargo packager --release --formats wix
+
+      - name: Rename MSI to stable asset name
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem dist\*.msi | Select-Object -First 1
+          Move-Item $msi.FullName dist\Colomin.msi
+          Get-ChildItem dist\
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Colomin-windows
+          path: dist/Colomin.msi
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/Colomin.msi
           draft: false
           prerelease: false
           generate_release_notes: true

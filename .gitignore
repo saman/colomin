@@ -1,5 +1,6 @@
 /plans
 /target
+/dist
 .DS_Store
 .claude
 graphify-out

@@ -5,8 +5,9 @@
 //! formatting, no I/O happens unless logging is on.
 //!
 //! When enabled, lines are appended to a session log file under
-//! `~/Library/Logs/Colomin/` (macOS) or `$XDG_STATE_HOME` / temp dir
-//! elsewhere. Output is buffered (`BufWriter`) and flushed periodically.
+//! `~/Library/Logs/Colomin/` (macOS), `$XDG_STATE_HOME/colomin/` or
+//! `~/.local/state/colomin/` (Linux), or `%LOCALAPPDATA%\colomin\logs\`
+//! (Windows). Output is buffered (`BufWriter`) and flushed periodically.
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
@@ -35,14 +36,27 @@ pub fn current_log_path() -> Option<PathBuf> {
 
 /// Default directory for log files.
 pub fn log_dir() -> PathBuf {
-    if cfg!(target_os = "macos") {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        PathBuf::from(home).join("Library/Logs/Colomin")
-    } else {
+    #[cfg(target_os = "macos")]
+    {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("Library/Logs/Colomin")
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
         std::env::var("XDG_STATE_HOME")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| std::env::temp_dir())
+            .ok()
+            .or_else(|| dirs::home_dir().map(|h| h.join(".local/state")))
+            .unwrap_or_else(std::env::temp_dir)
             .join("colomin")
+    }
+    #[cfg(windows)]
+    {
+        dirs::data_local_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("colomin")
+            .join("logs")
     }
 }
 

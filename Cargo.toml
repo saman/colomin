@@ -10,8 +10,10 @@ egui = { version = "0.32", features = [] }
 egui_extras = { version = "0.32", features = ["svg"] }
 anyhow = "1"
 csv = "1.3"
+dirs = "5"
 fontdb = "0.22"
 image = { version = "0.25", default-features = false, features = ["png"] }
+opener = "0.7"
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -24,18 +26,72 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSURL"] }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+interprocess = "2"
+
 [profile.dev]
 opt-level = 1
 
-[package.metadata.bundle]
-name = "Colomin"
+# ── cargo-packager (unified macOS / Linux / Windows packaging) ────────────────
+# One config produces .app/.dmg (macOS), .deb/.AppImage (Linux), and .msi (Windows).
+# Code signing + notarization on macOS are driven by env vars at build time:
+#   APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD (cert)
+#   APPLE_API_KEY / APPLE_API_ISSUER / APPLE_API_KEY_PATH (notarization)
+[package.metadata.packager]
+product-name = "Colomin"
 identifier = "com.colomin.app"
-version = "0.1.2"
+description = "A native CSV editor"
+long-description = "Colomin is a fast, native CSV editor built with Rust and egui. Edit large CSV files with virtualized scrolling, undo/redo, sort, cell editing, and theme support."
+authors = ["Colomin"]
+publisher = "Colomin"
+homepage = "https://github.com/saman/colomin"
 copyright = "Copyright © 2025 Colomin"
-category = "public.app-category.productivity"
-short_description = "A native CSV editor"
-icon = ["assets/Colomin.icns"]
-osx_minimum_system_version = "12.0"
+category = "Productivity"
+icons = ["assets/app_icon_256.png", "assets/Colomin.icns"]
+out-dir = "dist"
+
+[[package.metadata.packager.binaries]]
+path = "colomin"
+main = true
+
+[[package.metadata.packager.file-associations]]
+extensions = ["csv"]
+description = "CSV File"
+mime-type = "text/csv"
+name = "Colomin CSV File"
+role = "editor"
+
+[[package.metadata.packager.file-associations]]
+extensions = ["tsv"]
+description = "TSV File"
+mime-type = "text/tab-separated-values"
+name = "Colomin TSV File"
+role = "editor"
+
+[[package.metadata.packager.file-associations]]
+extensions = ["txt"]
+description = "Text File"
+mime-type = "text/plain"
+name = "Plain Text File"
+role = "editor"
+
+[package.metadata.packager.macos]
+minimum-system-version = "12.0"
+
+[package.metadata.packager.deb]
+depends = [
+    "libc6",
+    "libgtk-3-0",
+    "libxkbcommon0",
+    "libxkbcommon-x11-0",
+    "libfontconfig1",
+    "libwayland-client0",
+    "libxcb1",
+    "libx11-6",
+]
+
+[package.metadata.packager.wix]
+languages = ["en-US"]
 
 [profile.release]
 opt-level = 3
