@@ -1,6 +1,6 @@
 [package]
 name = "colomin"
-version = "0.2.0-rc7"
+version = "0.2.0-rc8"
 edition = "2021"
 description = "A fast, native CSV editor for macOS, Linux, and Windows."
 homepage = "https://github.com/saman/colomin"

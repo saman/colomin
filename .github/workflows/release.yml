@@ -235,18 +235,16 @@ jobs:
           prerelease: false
           generate_release_notes: true
 
-  # ── Windows: .msi via WiX (x86_64 + arm64) ─────────────────────────────────
-  # Both archs build on `windows-latest` (x86_64). The arm64 job cross-compiles
-  # to `aarch64-pc-windows-msvc`, then runs candle.exe (x86_64 native) to
-  # generate an arm64-tagged MSI containing the arm64 binary.
-  #
-  # We tried the native `windows-11-arm` runner — cargo-packager's WiX
-  # backend uses WiX 3.11.2 (2017), which fails when candle.exe runs under
-  # Windows-on-ARM x86 emulation. Cross-compiling from x86_64 avoids the
-  # emulation layer entirely and is what most Rust projects do for arm64
-  # Windows.
+  # ── Windows: .msi (x86_64) + portable .zip (both archs) ────────────────────
+  # Both archs build on `windows-latest` (x86_64). x86_64 produces a .msi via
+  # WiX plus a portable .zip. arm64 cross-compiles to `aarch64-pc-windows-msvc`
+  # and ships *only* the portable .zip — cargo-packager bundles WiX 3.11.2
+  # (2017) which can't reliably produce arm64 MSIs (neither natively on
+  # `windows-11-arm` nor via cross-compile from x86_64). Snapdragon users
+  # extract the .zip and run colomin.exe directly; the binary is fully native
+  # arm64.
   build-windows:
-    name: Windows ${{ matrix.arch }} (.msi + portable .zip)
+    name: Windows ${{ matrix.arch }}
     runs-on: windows-latest
     needs: verify-version
     # Static CRT so the portable .exe runs on stock Windows without needing
@@ -259,16 +257,20 @@ jobs:
         include:
           - arch: x86_64
             target: x86_64-pc-windows-msvc
-            packager_target_flag: ""
-            # cargo-packager appends `_x64_en-US` to MSI names on x86_64.
+            # x86_64 is the runner's native arch — use default cargo paths
+            # (target/release/) so cargo-packager finds the binary without
+            # needing an explicit --target flag.
+            cargo_target_flag: ""
+            exe_path: "target/release/colomin.exe"
+            build_msi: true
             msi_pattern: "*x64*.msi"
             msi_asset: "Colomin.msi"
             zip_asset: "Colomin-portable-x86_64.zip"
           - arch: arm64
             target: aarch64-pc-windows-msvc
-            packager_target_flag: "--target aarch64-pc-windows-msvc"
-            msi_pattern: "*arm64*.msi"
-            msi_asset: "Colomin-arm64.msi"
+            cargo_target_flag: "--target aarch64-pc-windows-msvc"
+            exe_path: "target/aarch64-pc-windows-msvc/release/colomin.exe"
+            build_msi: false
             zip_asset: "Colomin-portable-arm64.zip"
     steps:
       - uses: actions/checkout@v4
@@ -284,6 +286,7 @@ jobs:
           key: ${{ matrix.arch }}
 
       - name: Install cargo-packager
+        if: ${{ matrix.build_msi }}
         run: cargo install cargo-packager --locked
 
       # WiX/MSI versions must be `major.minor.patch[.build]` with every
@@ -293,6 +296,7 @@ jobs:
       # The .deb / .AppImage / .dmg / .rpm builds use the unmodified version
       # from their own runners, so cross-arch parity is preserved.
       - name: Patch version for MSI (strip prerelease suffix)
+        if: ${{ matrix.build_msi }}
         shell: pwsh
         run: |
           $path = "Cargo.toml"
@@ -302,12 +306,14 @@ jobs:
           Get-Content $path | Select-String '^version' | Select-Object -First 1
 
       - name: Build release
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release ${{ matrix.cargo_target_flag }}
 
       - name: Package (.msi)
-        run: cargo packager --release --formats wix ${{ matrix.packager_target_flag }}
+        if: ${{ matrix.build_msi }}
+        run: cargo packager --release --formats wix
 
       - name: Rename MSI to stable asset name
+        if: ${{ matrix.build_msi }}
         shell: pwsh
         run: |
           $msi = Get-ChildItem dist\${{ matrix.msi_pattern }} | Select-Object -First 1
@@ -319,23 +325,20 @@ jobs:
       - name: Package portable .zip
         shell: pwsh
         run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
           Compress-Archive `
-            -Path target\${{ matrix.target }}\release\colomin.exe `
+            -Path ${{ matrix.exe_path }} `
             -DestinationPath dist\${{ matrix.zip_asset }}
           Get-ChildItem dist\
 
       - uses: actions/upload-artifact@v4
         with:
           name: Colomin-windows-${{ matrix.arch }}
-          path: |
-            dist/${{ matrix.msi_asset }}
-            dist/${{ matrix.zip_asset }}
+          path: dist/*
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist/${{ matrix.msi_asset }}
-            dist/${{ matrix.zip_asset }}
+          files: dist/*
           draft: false
           prerelease: false
           generate_release_notes: true
