@@ -103,6 +103,17 @@ depends = [
     "libxcb1",
     "libx11-6",
 ]
+# AppStream metainfo so GNOME Software / Discover / App Center show Colomin's
+# name, icon, and description in the pre-install view (without this they fall
+# back to the lowercase `Package` field and a generic icon placeholder).
+[package.metadata.packager.deb.files]
+"assets/linux/com.colomin.app.metainfo.xml" = "/usr/share/metainfo/com.colomin.app.metainfo.xml"
+
+[package.metadata.packager.appimage]
+# Bundle the same metainfo inside the .AppImage so software centers that scan
+# AppImages (e.g. AppImageLauncher integrations) can show proper metadata.
+[package.metadata.packager.appimage.files]
+"assets/linux/com.colomin.app.metainfo.xml" = "/usr/share/metainfo/com.colomin.app.metainfo.xml"
 
 [package.metadata.packager.wix]
 languages = ["en-US"]

@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.colomin.app</id>
+  <metadata_license>FSFAP</metadata_license>
+  <project_license>AGPL-3.0-or-later</project_license>
+
+  <name>Colomin</name>
+  <summary>A fast, native CSV editor</summary>
+
+  <description>
+    <p>
+      Colomin is a fast, native CSV editor for macOS, Linux, and Windows.
+      Edit large CSV files like text — open instantly, edit like a spreadsheet,
+      save like a file.
+    </p>
+    <p>
+      Millions of rows, virtualized scrolling, undo/redo, column sort, cell
+      editing, theme support. No cloud, no subscription, no waiting for a
+      worksheet to load.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">colomin.desktop</launchable>
+
+  <!-- Stock icon: resolved against /usr/share/icons/hicolor/.../apps/colomin.png
+       which is installed by the .deb at the matching path. -->
+  <icon type="stock">colomin</icon>
+
+  <url type="homepage">https://github.com/saman/colomin</url>
+  <url type="bugtracker">https://github.com/saman/colomin/issues</url>
+
+  <developer id="app.colomin">
+    <name>Colomin</name>
+  </developer>
+
+  <provides>
+    <binary>colomin</binary>
+    <mediatype>text/csv</mediatype>
+    <mediatype>text/tab-separated-values</mediatype>
+  </provides>
+
+  <categories>
+    <category>Office</category>
+    <category>Spreadsheet</category>
+    <category>Utility</category>
+  </categories>
+
+  <content_rating type="oars-1.1" />
+</component>
