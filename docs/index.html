@@ -399,6 +399,15 @@
       align-items: center;
       flex-wrap: wrap;
       margin-bottom: 64px;
+      /* The hero `.cta-row` has class `rise`, whose animation uses
+         `animation-fill-mode: both` and so leaves `transform: translateY(0)`
+         applied — which creates a stacking context. Explicit z-index 10
+         lifts that context above the sibling `.meta-row` (which also gets
+         a transform-induced stacking context from its own .rise class), so
+         the dropdown menu inside the split-button paints above the spec
+         line text instead of underneath it. */
+      position: relative;
+      z-index: 10;
     }
     .btn {
       display: inline-flex;
@@ -452,15 +461,14 @@
     }
 
     /* ---------- split download button (primary + arch dropdown) ---------- */
-    /* `isolation: isolate` plus a high z-index lifts the whole split-button
-       block above section/mockup stacking contexts. Without this the menu
-       gets painted underneath the screenshot mockup and subsequent sections
-       (their `filter: drop-shadow(...)` and animation `transform`s create
-       stacking contexts that compete for the same paint layer). */
+    /* High z-index on the split-btn itself so the whole block (and its
+       absolute-positioned menu) sits above sibling sections — `.meta-row`
+       and the screenshot `.mockup` both create stacking contexts (transform
+       from the .rise animation's `both` fill-mode, and `filter: drop-shadow`)
+       that would otherwise paint over the menu in DOM order. */
     .split-btn {
       display: inline-flex;
       position: relative;
-      isolation: isolate;
       z-index: 100;
     }
     .split-btn > .btn-primary {
