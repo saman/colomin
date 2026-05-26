@@ -246,9 +246,13 @@ jobs:
   # emulation layer entirely and is what most Rust projects do for arm64
   # Windows.
   build-windows:
-    name: Windows ${{ matrix.arch }} (.msi)
+    name: Windows ${{ matrix.arch }} (.msi + portable .zip)
     runs-on: windows-latest
     needs: verify-version
+    # Static CRT so the portable .exe runs on stock Windows without needing
+    # the VC++ Redistributable installed. Adds ~1 MB to the binary; trivial.
+    env:
+      RUSTFLAGS: "-C target-feature=+crt-static"
     strategy:
       fail-fast: false
       matrix:
@@ -259,11 +263,13 @@ jobs:
             # cargo-packager appends `_x64_en-US` to MSI names on x86_64.
             msi_pattern: "*x64*.msi"
             msi_asset: "Colomin.msi"
+            zip_asset: "Colomin-portable-x86_64.zip"
           - arch: arm64
             target: aarch64-pc-windows-msvc
             packager_target_flag: "--target aarch64-pc-windows-msvc"
             msi_pattern: "*arm64*.msi"
             msi_asset: "Colomin-arm64.msi"
+            zip_asset: "Colomin-portable-arm64.zip"
     steps:
       - uses: actions/checkout@v4
 
@@ -306,16 +312,30 @@ jobs:
         run: |
           $msi = Get-ChildItem dist\${{ matrix.msi_pattern }} | Select-Object -First 1
           Move-Item $msi.FullName dist\${{ matrix.msi_asset }}
+
+      # Portable distribution: just colomin.exe in a .zip. No installer, no
+      # registry entries, no Start Menu — users extract and run. Statically
+      # linked CRT (via RUSTFLAGS above) means it works on any Windows 10+.
+      - name: Package portable .zip
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path target\${{ matrix.target }}\release\colomin.exe `
+            -DestinationPath dist\${{ matrix.zip_asset }}
           Get-ChildItem dist\
 
       - uses: actions/upload-artifact@v4
         with:
           name: Colomin-windows-${{ matrix.arch }}
-          path: dist/${{ matrix.msi_asset }}
+          path: |
+            dist/${{ matrix.msi_asset }}
+            dist/${{ matrix.zip_asset }}
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/${{ matrix.msi_asset }}
+          files: |
+            dist/${{ matrix.msi_asset }}
+            dist/${{ matrix.zip_asset }}
           draft: false
           prerelease: false
           generate_release_notes: true
