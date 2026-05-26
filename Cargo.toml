@@ -1,6 +1,6 @@
 [package]
 name = "colomin"
-version = "0.2.0-rc5"
+version = "0.2.0"
 edition = "2021"
 description = "A native CSV editor built with egui"
 
