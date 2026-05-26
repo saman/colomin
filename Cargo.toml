@@ -1,11 +1,16 @@
 [package]
 name = "colomin"
-version = "0.2.0-rc4"
+version = "0.2.0-rc5"
 edition = "2021"
 description = "A native CSV editor built with egui"
 
 [dependencies]
-eframe = { version = "0.32", features = [] }
+# `wgpu` feature enables the DirectX 12 / Metal / Vulkan backend in addition
+# to the default `glow` (OpenGL) one. We use wgpu on Windows because many VMs
+# (UTM on Apple Silicon, Hyper-V minimal display, etc.) don't ship OpenGL
+# 2.0+ drivers — eframe with glow then crashes at startup. DX12 works
+# everywhere on Windows 10+, including VMs.
+eframe = { version = "0.32", features = ["wgpu"] }
 egui = { version = "0.32", features = [] }
 egui_extras = { version = "0.32", features = ["svg"] }
 anyhow = "1"

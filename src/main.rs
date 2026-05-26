@@ -143,6 +143,13 @@ fn main() {
 
     let native_options = eframe::NativeOptions {
         viewport,
+        // Use wgpu (DX12/Metal/Vulkan) on Windows because the default glow
+        // backend requires OpenGL 2.0+, which many Windows VMs (UTM, Hyper-V
+        // basic display) don't expose. macOS + Linux keep the default glow
+        // backend — proven on both platforms, and switching could regress
+        // the working pipeline.
+        #[cfg(target_os = "windows")]
+        renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
 
