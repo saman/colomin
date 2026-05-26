@@ -522,6 +522,10 @@
                   0 0 0 1px var(--border) inset;
       z-index: 1000;
       animation: split-menu-in 0.16s ease-out;
+      /* `.download` (the lower section) sets `text-align: center` for its
+         hero copy — without this override the menu items inherit center
+         alignment and look weird. */
+      text-align: left;
     }
     .split-btn-menu[hidden] { display: none; }
     /* When the split-button sits inside a clipped section (e.g. the bottom
