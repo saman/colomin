@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Colomin - The native CSV editor for macOS</title>
+  <title>Colomin - The native CSV editor</title>
   <meta name="description" content="Open it instantly. Edit it like a spreadsheet. Save it like a file. Colomin handles millions of rows without flinching, no cloud, no subscription, no waiting for a worksheet to load." />
   <meta name="theme-color" content="#0a0a0c" media="(prefers-color-scheme: dark)" />
   <meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)" />
@@ -11,7 +11,7 @@
   <link rel="icon" type="image/svg+xml" href="images/icon.svg" />
   <link rel="apple-touch-icon" href="images/icon.svg" />
 
-  <meta property="og:title" content="Colomin - The native CSV editor for macOS" />
+  <meta property="og:title" content="Colomin - The native CSV editor" />
   <meta property="og:description" content="Open it instantly. Edit it like a spreadsheet. Save it like a file. Colomin handles millions of rows without flinching, no cloud, no subscription, no waiting for a worksheet to load." />
   <meta property="og:image" content="images/icon.svg" />
   <meta property="og:type" content="website" />
@@ -809,7 +809,7 @@
       letter-spacing: 0.06em;
     }
 
-    /* ---------- brew install pill ---------- */
+    /* ---------- brew install pill / platform link row ---------- */
     .install-alt {
       display: flex;
       align-items: center;
@@ -826,6 +826,19 @@
       text-transform: uppercase;
       color: var(--text-mute);
     }
+    /* Variant: row of OS-specific download links under the primary CTA. */
+    .install-alt.platform-links { gap: 10px; margin-top: -36px; }
+    .install-alt.platform-links a {
+      color: var(--text);
+      text-decoration: none;
+      border-bottom: 1px dashed var(--border-strong);
+      transition: color 0.18s ease, border-color 0.18s ease;
+    }
+    .install-alt.platform-links a:hover {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+    .install-alt.platform-links .sep { color: var(--border-strong); }
     .brew-install {
       display: inline-flex;
       align-items: center;
@@ -933,22 +946,33 @@
 
   <header class="hero">
     <div class="container">
-      <span class="eyebrow rise d1"><span class="dot"></span> <!--VERSION-->v0.1.2<!--/VERSION--> <span class="sep">/</span> Native CSV editor <span class="sep">/</span> macOS</span>
+      <span class="eyebrow rise d1"><span class="dot"></span> <!--VERSION-->v0.1.2<!--/VERSION--> <span class="sep">/</span> Native CSV editor <span class="sep">/</span> macOS · Linux · Windows</span>
       <h1 class="headline rise d2">A CSV editor that <span class="gradient">feels like&nbsp;text</span>.</h1>
       <p class="lede rise d3">Open it instantly. Edit it like a spreadsheet. Save it like a file. Colomin handles millions of rows without flinching, no cloud, no subscription, no waiting for a worksheet to load.</p>
 
       <div class="cta-row rise d4">
-        <a href="https://github.com/saman/colomin/releases/latest/download/Colomin.dmg" class="btn btn-primary">
+        <a data-os-download href="https://github.com/saman/colomin/releases/latest/download/Colomin.dmg" class="btn btn-primary">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>
           <span class="btn-text">
-            <span class="btn-label">Download for macOS</span>
-            <span class="platform">Apple Silicon &amp; Intel · macOS 13+</span>
+            <span class="btn-label" data-os-label>Download for macOS</span>
+            <span class="platform" data-os-platform>Universal · macOS 13+</span>
           </span>
         </a>
         <a href="https://github.com/saman/colomin" target="_blank" rel="noopener" class="btn btn-ghost">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.38 7.86 10.9.58.11.79-.25.79-.56v-2.16c-3.2.7-3.87-1.36-3.87-1.36-.52-1.32-1.27-1.68-1.27-1.68-1.04-.71.08-.69.08-.69 1.15.08 1.76 1.18 1.76 1.18 1.02 1.75 2.69 1.25 3.34.96.1-.75.4-1.25.72-1.54-2.55-.29-5.23-1.28-5.23-5.7 0-1.26.45-2.29 1.18-3.1-.12-.29-.51-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11.04 11.04 0 015.78 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.18 1.84 1.18 3.1 0 4.43-2.69 5.41-5.25 5.69.41.36.78 1.06.78 2.14v3.17c0 .31.21.68.8.56C20.21 21.38 23.5 17.08 23.5 12 23.5 5.65 18.35.5 12 .5z"/></svg>
           View source
         </a>
+      </div>
+
+      <div class="install-alt platform-links rise d4">
+        <span class="or">Other downloads</span>
+        <a href="https://github.com/saman/colomin/releases/latest/download/Colomin.dmg">macOS .dmg</a>
+        <span class="sep">·</span>
+        <a href="https://github.com/saman/colomin/releases/latest/download/Colomin.deb">Linux .deb</a>
+        <span class="sep">·</span>
+        <a href="https://github.com/saman/colomin/releases/latest/download/Colomin-x86_64.AppImage">Linux .AppImage</a>
+        <span class="sep">·</span>
+        <a href="https://github.com/saman/colomin/releases/latest/download/Colomin.msi">Windows .msi</a>
       </div>
 
       <!-- Hidden until cask is accepted into homebrew/homebrew-cask.
@@ -1068,7 +1092,7 @@
             <h4>Excel / Numbers</h4>
             <ul>
               <li class="bad">Caps under 1M rows</li>
-              <li class="good">Native macOS app</li>
+              <li class="good">Native cross-platform app</li>
               <li class="bad">Cloud sync by default</li>
               <li class="bad">Closed source</li>
               <li class="bad">Paid / bundled</li>
@@ -1078,7 +1102,7 @@
             <h4>Colomin</h4>
             <ul>
               <li>Streams 10M+ rows</li>
-              <li>Native macOS, written in Rust</li>
+              <li>Native macOS, Linux &amp; Windows, written in Rust</li>
               <li>Local files, always</li>
               <li>AGPLv3 source</li>
               <li>Free for personal use</li>
@@ -1119,13 +1143,22 @@
     <div class="container">
       <img src="images/icon.svg" alt="Colomin app icon" class="big-icon" />
       <h2>Open a CSV that doesn't <em>take a minute to load.</em></h2>
-      <p>Free and open source for personal use. Apple Silicon &amp; Intel · macOS 13+. Source under AGPLv3.</p>
+      <p>Free and open source for personal use. macOS · Linux · Windows. Source under AGPLv3.</p>
       <div class="cta-row" style="justify-content: center; margin-bottom: 0;">
-        <a href="https://github.com/saman/colomin/releases/latest/download/Colomin.dmg" class="btn btn-primary">
+        <a data-os-download href="https://github.com/saman/colomin/releases/latest/download/Colomin.dmg" class="btn btn-primary">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>
-          Download for macOS
+          <span data-os-label>Download for macOS</span>
         </a>
         <a href="https://github.com/saman/colomin" target="_blank" rel="noopener" class="btn btn-ghost">Star on GitHub</a>
+      </div>
+      <div class="install-alt platform-links" style="justify-content: center; margin-top: 22px; margin-bottom: 0;">
+        <a href="https://github.com/saman/colomin/releases/latest/download/Colomin.dmg">macOS .dmg</a>
+        <span class="sep">·</span>
+        <a href="https://github.com/saman/colomin/releases/latest/download/Colomin.deb">Linux .deb</a>
+        <span class="sep">·</span>
+        <a href="https://github.com/saman/colomin/releases/latest/download/Colomin-x86_64.AppImage">Linux .AppImage</a>
+        <span class="sep">·</span>
+        <a href="https://github.com/saman/colomin/releases/latest/download/Colomin.msi">Windows .msi</a>
       </div>
       <!-- Hidden until cask is accepted into homebrew/homebrew-cask.
       <div class="install-alt center">
@@ -1148,14 +1181,14 @@
             <img src="images/icon.svg" alt="" style="width: 24px; height: 24px; border-radius: 6px;" />
             <span>Colomin</span>
           </a>
-          <p style="max-width: 36ch; line-height: 1.6;">A native CSV editor for macOS. Built in Rust. Open source. Your data stays on your machine.</p>
+          <p style="max-width: 36ch; line-height: 1.6;">A native CSV editor for macOS, Linux &amp; Windows. Built in Rust. Open source. Your data stays on your machine.</p>
         </div>
         <div class="footer-col">
           <h5>Product</h5>
           <ul>
             <li><a href="#features">Features</a></li>
             <li><a href="#shortcuts">Shortcuts</a></li>
-            <li><a href="https://github.com/saman/colomin/releases/latest/download/Colomin.dmg">Download</a></li>
+            <li><a href="https://github.com/saman/colomin/releases/latest">Download</a></li>
           </ul>
         </div>
         <div class="footer-col">
@@ -1183,6 +1216,37 @@
   </footer>
 
   <script>
+    // ── OS detection: swap primary download button to the visitor's platform.
+    // Falls back to the macOS default (already in the markup) for unknown
+    // platforms and for visitors with JS disabled.
+    (function() {
+      function detectOS() {
+        var hay = ((navigator.userAgent || '') + ' ' + (navigator.platform || '')).toLowerCase();
+        if (/mac/.test(hay)) return 'macos';
+        if (/win/.test(hay)) return 'windows';
+        if (/linux|x11|ubuntu|debian|fedora/.test(hay)) return 'linux';
+        return 'macos';
+      }
+      var BASE = 'https://github.com/saman/colomin/releases/latest/download/';
+      var CFG = {
+        macos:   { label: 'Download for macOS',   platform: 'Universal · macOS 13+',           url: BASE + 'Colomin.dmg' },
+        linux:   { label: 'Download for Linux',   platform: 'x86_64 · .deb or .AppImage',      url: BASE + 'Colomin-x86_64.AppImage' },
+        windows: { label: 'Download for Windows', platform: 'x86_64 · Windows 10/11',          url: BASE + 'Colomin.msi' }
+      };
+      var os = detectOS();
+      var cfg = CFG[os];
+      document.querySelectorAll('[data-os-download]').forEach(function(el) {
+        el.setAttribute('href', cfg.url);
+        el.setAttribute('data-active-os', os);
+      });
+      document.querySelectorAll('[data-os-label]').forEach(function(el) {
+        el.textContent = cfg.label;
+      });
+      document.querySelectorAll('[data-os-platform]').forEach(function(el) {
+        el.textContent = cfg.platform;
+      });
+    })();
+
     (function() {
       var root = document.documentElement;
       var btn = document.getElementById('theme-toggle');
