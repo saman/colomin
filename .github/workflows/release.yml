@@ -63,9 +63,7 @@ jobs:
 
       # Preflight: signing and notarization are gated on the presence of
       # secrets. `secrets.*` can't be used in `if:`, so we surface them as step
-      # outputs via env-loaded checks. Notarization is *additionally* skipped
-      # for `-rc*` tags so iterating on the cross-platform pipeline doesn't
-      # burn Apple's notary queue. Final tags (v0.2.0 etc.) still notarize.
+      # outputs via env-loaded checks.
       - name: Preflight signing config
         id: pre
         env:
@@ -73,11 +71,7 @@ jobs:
           P8:   ${{ secrets.AC_API_KEY_P8 }}
         run: |
           [ -n "$CERT" ] && echo "has_cert=true" >> "$GITHUB_OUTPUT"
-          if [ -n "$P8" ] && [[ "$GITHUB_REF_NAME" != *-rc* ]]; then
-            echo "has_key=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Notarization skipped: $GITHUB_REF_NAME is an rc tag or no key configured."
-          fi
+          [ -n "$P8" ]   && echo "has_key=true"  >> "$GITHUB_OUTPUT"
 
       # Write the App Store Connect API key to disk so cargo-packager can read
       # it via APPLE_API_KEY_PATH during notarization.
