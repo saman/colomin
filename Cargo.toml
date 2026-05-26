@@ -1,6 +1,6 @@
 [package]
 name = "colomin"
-version = "0.2.0-rc3"
+version = "0.2.0-rc4"
 edition = "2021"
 description = "A native CSV editor built with egui"
 
@@ -29,6 +29,9 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 [target.'cfg(target_os = "windows")'.dependencies]
 interprocess = "2"
 
+[target.'cfg(target_os = "windows")'.build-dependencies]
+winresource = "0.1"
+
 [profile.dev]
 opt-level = 1
 
@@ -47,7 +50,7 @@ publisher = "Colomin"
 homepage = "https://github.com/saman/colomin"
 copyright = "Copyright © 2025 Colomin"
 category = "Productivity"
-icons = ["assets/app_icon_256.png", "assets/Colomin.icns"]
+icons = ["assets/app_icon_256.png", "assets/Colomin.icns", "assets/Colomin.ico"]
 out-dir = "dist"
 
 [[package.metadata.packager.binaries]]

@@ -1,3 +1,8 @@
+// Windows GUI subsystem: suppresses the console window that would otherwise
+// open alongside Colomin when launched from Explorer / the Start menu. Only
+// applied on release builds so `cargo run` still has stdout/stderr for logs.
+#![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
+
 mod app;
 #[cfg(target_os = "macos")]
 mod apple_events;
