@@ -512,6 +512,8 @@
       top: calc(100% + 8px);
       right: 0;
       min-width: 260px;
+      max-height: 70vh;
+      overflow-y: auto;
       background: var(--surface);
       border: 1px solid var(--border-strong);
       border-radius: 12px;
@@ -522,8 +524,21 @@
       animation: split-menu-in 0.16s ease-out;
     }
     .split-btn-menu[hidden] { display: none; }
+    /* When the split-button sits inside a clipped section (e.g. the bottom
+       download CTA, which uses `overflow: hidden` for its decorative glow),
+       the menu can't extend below the section boundary. Open it upward
+       instead by setting `data-direction="up"` on the .split-btn. */
+    .split-btn[data-direction="up"] .split-btn-menu {
+      top: auto;
+      bottom: calc(100% + 8px);
+      animation: split-menu-in-up 0.16s ease-out;
+    }
     @keyframes split-menu-in {
       from { opacity: 0; transform: translateY(-4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes split-menu-in-up {
+      from { opacity: 0; transform: translateY(4px); }
       to   { opacity: 1; transform: translateY(0); }
     }
     .split-btn-group-label {
@@ -1277,7 +1292,7 @@
       <h2>Open a CSV that doesn't <em>take a minute to load.</em></h2>
       <p>Free and open source for personal use. macOS · Linux · Windows. Source under AGPLv3.</p>
       <div class="cta-row" style="justify-content: center; margin-bottom: 0;">
-        <div class="split-btn">
+        <div class="split-btn" data-direction="up">
           <a data-os-download href="https://github.com/saman/colomin/releases/latest/download/Colomin.dmg" class="btn btn-primary">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>
             <span data-os-label>Download for macOS</span>
