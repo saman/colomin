@@ -130,12 +130,15 @@ jobs:
           prerelease: false
           generate_release_notes: true
 
-  # ── Linux: .deb + .AppImage (x86_64 + arm64) ───────────────────────────────
+  # ── Linux: .deb + .AppImage + .rpm (x86_64 + arm64) ────────────────────────
   # Two native runners — no cross-compilation. GitHub Actions ships free arm64
-  # Linux runners since 2025 (`ubuntu-22.04-arm`). Each job produces a .deb
-  # and a .AppImage matching its host architecture.
+  # Linux runners since 2025 (`ubuntu-22.04-arm`). Each job produces a .deb,
+  # .AppImage, and .rpm matching its host architecture.
+  #
+  # cargo-packager doesn't have an RPM backend; we use `cargo-generate-rpm`
+  # for that (configured under [package.metadata.generate-rpm] in Cargo.toml).
   build-linux:
-    name: Linux ${{ matrix.arch }} (.deb + .AppImage)
+    name: Linux ${{ matrix.arch }} (.deb + .AppImage + .rpm)
     runs-on: ${{ matrix.runner }}
     needs: verify-version
     strategy:
@@ -149,12 +152,16 @@ jobs:
             deb_asset: "Colomin.deb"
             appimage_pattern: "*x86_64.AppImage"
             appimage_asset: "Colomin-x86_64.AppImage"
+            rpm_pattern: "*x86_64.rpm"
+            rpm_asset: "Colomin.rpm"
           - arch: arm64
             runner: ubuntu-22.04-arm
             deb_pattern: "*arm64.deb"
             deb_asset: "Colomin-arm64.deb"
             appimage_pattern: "*aarch64.AppImage"
             appimage_asset: "Colomin-aarch64.AppImage"
+            rpm_pattern: "*aarch64.rpm"
+            rpm_asset: "Colomin-arm64.rpm"
     steps:
       - uses: actions/checkout@v4
 
@@ -176,8 +183,8 @@ jobs:
             libwayland-dev libxcb1-dev libx11-dev \
             file fuse libfuse2 desktop-file-utils
 
-      - name: Install cargo-packager
-        run: cargo install cargo-packager --locked
+      - name: Install packagers
+        run: cargo install cargo-packager cargo-generate-rpm --locked
 
       - name: Build release
         run: cargo build --release
@@ -185,10 +192,29 @@ jobs:
       - name: Package (.deb + .AppImage)
         run: cargo packager --release --formats deb,appimage
 
+      # RPM versions disallow `-` (it separates Version from Release in the
+      # filename). Cargo SemVer prereleases like "0.2.0-rc7" must be rewritten
+      # as "0.2.0~rc7" (tilde = RPM "less than the un-suffixed version", which
+      # is the correct prerelease ordering). Patch happens after .deb / .AppImage
+      # are produced, so those keep the unmodified SemVer.
+      - name: Patch version for RPM (replace `-` with `~`)
+        run: |
+          sed -i -E 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)-(.+)"/version = "\1~\2"/' Cargo.toml
+          grep '^version' Cargo.toml | head -1
+
+      - name: Package (.rpm)
+        run: |
+          cargo generate-rpm
+          # cargo-generate-rpm writes to target/generate-rpm/<name>-<ver>-1.<arch>.rpm.
+          # Move it next to the cargo-packager outputs so the rename step below
+          # finds everything in dist/.
+          mv target/generate-rpm/*.rpm dist/
+
       - name: Rename artifacts to stable asset names
         run: |
           mv dist/${{ matrix.deb_pattern }}      dist/${{ matrix.deb_asset }}
           mv dist/${{ matrix.appimage_pattern }} dist/${{ matrix.appimage_asset }}
+          mv dist/${{ matrix.rpm_pattern }}      dist/${{ matrix.rpm_asset }}
           ls -la dist/
 
       - uses: actions/upload-artifact@v4
@@ -197,35 +223,45 @@ jobs:
           path: |
             dist/${{ matrix.deb_asset }}
             dist/${{ matrix.appimage_asset }}
+            dist/${{ matrix.rpm_asset }}
 
       - uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/${{ matrix.deb_asset }}
             dist/${{ matrix.appimage_asset }}
+            dist/${{ matrix.rpm_asset }}
           draft: false
           prerelease: false
           generate_release_notes: true
 
   # ── Windows: .msi via WiX (x86_64 + arm64) ─────────────────────────────────
-  # Native runners for each arch — `windows-latest` is x86_64,
-  # `windows-11-arm` is arm64 (free for public repos since 2025). Each job
-  # produces an arch-tagged MSI.
+  # Both archs build on `windows-latest` (x86_64). The arm64 job cross-compiles
+  # to `aarch64-pc-windows-msvc`, then runs candle.exe (x86_64 native) to
+  # generate an arm64-tagged MSI containing the arm64 binary.
+  #
+  # We tried the native `windows-11-arm` runner — cargo-packager's WiX
+  # backend uses WiX 3.11.2 (2017), which fails when candle.exe runs under
+  # Windows-on-ARM x86 emulation. Cross-compiling from x86_64 avoids the
+  # emulation layer entirely and is what most Rust projects do for arm64
+  # Windows.
   build-windows:
     name: Windows ${{ matrix.arch }} (.msi)
-    runs-on: ${{ matrix.runner }}
+    runs-on: windows-latest
     needs: verify-version
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: x86_64
-            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            packager_target_flag: ""
             # cargo-packager appends `_x64_en-US` to MSI names on x86_64.
             msi_pattern: "*x64*.msi"
             msi_asset: "Colomin.msi"
           - arch: arm64
-            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            packager_target_flag: "--target aarch64-pc-windows-msvc"
             msi_pattern: "*arm64*.msi"
             msi_asset: "Colomin-arm64.msi"
     steps:
@@ -233,6 +269,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -246,8 +284,8 @@ jobs:
       # component numeric (and ≤ 65535). Cargo accepts SemVer prereleases like
       # "0.2.0-rc1" but WiX rejects them. Strip any prerelease/build suffix
       # from Cargo.toml's `version = "..."` line *for the MSI build only*.
-      # The .deb / .AppImage / .dmg builds use the unmodified version from
-      # their own runners, so cross-arch parity is preserved.
+      # The .deb / .AppImage / .dmg / .rpm builds use the unmodified version
+      # from their own runners, so cross-arch parity is preserved.
       - name: Patch version for MSI (strip prerelease suffix)
         shell: pwsh
         run: |
@@ -258,10 +296,10 @@ jobs:
           Get-Content $path | Select-String '^version' | Select-Object -First 1
 
       - name: Build release
-        run: cargo build --release
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package (.msi)
-        run: cargo packager --release --formats wix
+        run: cargo packager --release --formats wix ${{ matrix.packager_target_flag }}
 
       - name: Rename MSI to stable asset name
         shell: pwsh

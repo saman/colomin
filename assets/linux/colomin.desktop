@@ -2,7 +2,7 @@
 Type=Application
 Name=Colomin
 GenericName=CSV Editor
-Comment=A native CSV editor built with egui
+Comment=A fast, native CSV editor for macOS, Linux, and Windows.
 Exec=colomin %F
 Icon=colomin
 Terminal=false

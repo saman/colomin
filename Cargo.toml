@@ -1,6 +1,6 @@
 [package]
 name = "colomin"
-version = "0.2.0-rc6"
+version = "0.2.0-rc7"
 edition = "2021"
 description = "A fast, native CSV editor for macOS, Linux, and Windows."
 homepage = "https://github.com/saman/colomin"
@@ -117,6 +117,27 @@ depends = [
 
 [package.metadata.packager.wix]
 languages = ["en-US"]
+
+# ── cargo-generate-rpm (Fedora/RHEL/openSUSE/Mageia .rpm packages) ────────────
+# cargo-packager doesn't have an RPM backend; cargo-generate-rpm fills the gap.
+# Reads the binary from target/release/colomin (or per-arch target dir on
+# cross-builds) and produces an RPM at target/generate-rpm/.
+[package.metadata.generate-rpm]
+name = "colomin"
+license = "AGPL-3.0-or-later"
+summary = "A fast, native CSV editor for macOS, Linux, and Windows."
+url = "https://github.com/saman/colomin"
+# Auto-detection of shared-lib requires picks up the build host's exact
+# library minor versions, which then refuses to install on different
+# distros / versions. Disable and declare deps by Fedora package name.
+auto-req = "no"
+requires = { gtk3 = "*", libxkbcommon = "*", fontconfig = "*", libwayland-client = "*", libxcb = "*", libX11 = "*" }
+assets = [
+    { source = "target/release/colomin",                              dest = "/usr/bin/colomin",                                              mode = "755" },
+    { source = "assets/linux/colomin.desktop",                        dest = "/usr/share/applications/colomin.desktop",                       mode = "644" },
+    { source = "assets/app_icon_256.png",                             dest = "/usr/share/icons/hicolor/256x256/apps/colomin.png",             mode = "644" },
+    { source = "assets/linux/com.colomin.app.metainfo.xml",           dest = "/usr/share/metainfo/com.colomin.app.metainfo.xml",              mode = "644" },
+]
 
 [profile.release]
 opt-level = 3
