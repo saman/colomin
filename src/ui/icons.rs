@@ -73,6 +73,7 @@ pub fn source(name: &str) -> egui::ImageSource<'static> {
         "copy-csv"             => entry!("bytes://copy-csv.svg",             "copy-csv.svg"),
         "copy-json"            => entry!("bytes://copy-json.svg",            "copy-json.svg"),
         "copy-markdown"        => entry!("bytes://copy-markdown.svg",        "copy-markdown.svg"),
+        "copy-yaml"            => entry!("bytes://copy-yaml.svg",            "copy-yaml.svg"),
         _                      => ("bytes://empty.svg", &[]),
     };
     pair.into()
