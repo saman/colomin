@@ -452,7 +452,17 @@
     }
 
     /* ---------- split download button (primary + arch dropdown) ---------- */
-    .split-btn { display: inline-flex; position: relative; }
+    /* `isolation: isolate` plus a high z-index lifts the whole split-button
+       block above section/mockup stacking contexts. Without this the menu
+       gets painted underneath the screenshot mockup and subsequent sections
+       (their `filter: drop-shadow(...)` and animation `transform`s create
+       stacking contexts that compete for the same paint layer). */
+    .split-btn {
+      display: inline-flex;
+      position: relative;
+      isolation: isolate;
+      z-index: 100;
+    }
     .split-btn > .btn-primary {
       border-top-right-radius: 0;
       border-bottom-right-radius: 0;
@@ -500,7 +510,7 @@
       padding: 6px 0;
       box-shadow: 0 16px 40px -14px rgba(0,0,0,0.35),
                   0 0 0 1px var(--border) inset;
-      z-index: 50;
+      z-index: 1000;
       animation: split-menu-in 0.16s ease-out;
     }
     .split-btn-menu[hidden] { display: none; }
