@@ -74,6 +74,7 @@ pub enum CopyMode {
     Csv,
     Json,
     Markdown,
+    Yaml,
 }
 
 impl CopyMode {
@@ -83,6 +84,7 @@ impl CopyMode {
             Self::Csv      => "CSV",
             Self::Json     => "JSON",
             Self::Markdown => "Markdown",
+            Self::Yaml     => "YAML",
         }
     }
 
@@ -92,10 +94,11 @@ impl CopyMode {
             Self::Csv      => "copy-csv",
             Self::Json     => "copy-json",
             Self::Markdown => "copy-markdown",
+            Self::Yaml     => "copy-yaml",
         }
     }
 
-    pub const ALL: [CopyMode; 4] = [Self::Text, Self::Csv, Self::Json, Self::Markdown];
+    pub const ALL: [CopyMode; 5] = [Self::Text, Self::Csv, Self::Json, Self::Markdown, Self::Yaml];
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -243,7 +243,51 @@ fn format_selection(state: &mut AppState, mode: crate::state::CopyMode) -> Strin
             }
             lines.join("\n")
         }
+
+        CopyMode::Yaml => {
+            let mut lines: Vec<String> = Vec::with_capacity(rows.len() * (cols.len() + 1));
+            for &r in &rows {
+                lines.push("-".to_string());
+                for (&c, h) in cols.iter().zip(headers.iter()) {
+                    let v = get_cell(state, r, c);
+                    lines.push(format!("  {}: {}", yaml_key(h), yaml_scalar(&v)));
+                }
+            }
+            lines.join("\n")
+        }
     }
+}
+
+fn yaml_needs_quote(s: &str) -> bool {
+    if s.is_empty() { return true; }
+    let trimmed = s.trim();
+    if trimmed != s { return true; }
+    if matches!(s, "true" | "false" | "True" | "False" | "TRUE" | "FALSE"
+        | "null" | "Null" | "NULL" | "~"
+        | "yes" | "Yes" | "YES" | "no" | "No" | "NO"
+        | "on" | "On" | "ON" | "off" | "Off" | "OFF") { return true; }
+    if s.parse::<f64>().is_ok() { return true; }
+    let first = s.chars().next().unwrap();
+    if matches!(first, '!' | '&' | '*' | '?' | '|' | '>' | '\'' | '"' | '%' | '@' | '`' | '#' | '-' | '[' | ']' | '{' | '}' | ',') { return true; }
+    s.chars().any(|ch| matches!(ch, ':' | '#' | '\n' | '\r' | '\t' | '"' | '\'' | '\\' | '[' | ']' | '{' | '}' | ',' | '&' | '*' | '!' | '|' | '>' | '%' | '@' | '`'))
+}
+
+fn yaml_quote(s: &str) -> String {
+    let escaped = s
+        .replace('\\', "\\\\")
+        .replace('"',  "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t");
+    format!("\"{}\"", escaped)
+}
+
+fn yaml_scalar(s: &str) -> String {
+    if yaml_needs_quote(s) { yaml_quote(s) } else { s.to_string() }
+}
+
+fn yaml_key(s: &str) -> String {
+    if s.is_empty() || yaml_needs_quote(s) { yaml_quote(s) } else { s.to_string() }
 }
 
 impl TableView {
