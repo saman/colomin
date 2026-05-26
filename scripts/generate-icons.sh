@@ -4,10 +4,12 @@
 #
 # Outputs:
 #   assets/Colomin.icns       — multi-resolution macOS bundle icon (16→1024)
+#   assets/Colomin.ico        — multi-resolution Windows .exe icon (16→256)
 #   assets/app_icon_256.png   — 256x256 PNG embedded in the binary (src/main.rs)
 #   docs/images/icon.svg      — copy for the website
 #
-# Requires: sips, iconutil (both ship with macOS).
+# Requires: sips, iconutil (both ship with macOS) and python3 with Pillow
+# (for the Windows .ico — `pip3 install Pillow` if not present).
 
 set -euo pipefail
 
@@ -28,6 +30,7 @@ mkdir -p "$ICONSET"
 echo "Removing previous outputs..."
 rm -f \
     "$PROJECT_DIR/assets/Colomin.icns" \
+    "$PROJECT_DIR/assets/Colomin.ico" \
     "$PROJECT_DIR/assets/app_icon_256.png" \
     "$PROJECT_DIR/docs/images/icon.svg"
 
@@ -61,6 +64,20 @@ iconutil -c icns "$ICONSET" -o "$PROJECT_DIR/assets/Colomin.icns"
 echo "Writing assets/app_icon_256.png..."
 cp -f "$ICONSET/icon_256x256.png" "$PROJECT_DIR/assets/app_icon_256.png"
 
+# Build a multi-resolution Windows .ico for the .exe icon resource (embedded
+# at link time by build.rs via the `winresource` crate). PIL packs all sizes
+# into a single .ico — Explorer/taskbar picks whichever resolution fits.
+echo "Building Colomin.ico (16, 24, 32, 48, 64, 128, 256)..."
+python3 - <<PY
+from PIL import Image
+img = Image.open("$TMPDIR/icon_1024.png").convert("RGBA")
+img.save(
+    "$PROJECT_DIR/assets/Colomin.ico",
+    format="ICO",
+    sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
+)
+PY
+
 echo "Copying SVG to docs/images/..."
 mkdir -p "$PROJECT_DIR/docs/images"
 cp -f "$SRC" "$PROJECT_DIR/docs/images/icon.svg"
@@ -68,5 +85,6 @@ cp -f "$SRC" "$PROJECT_DIR/docs/images/icon.svg"
 echo ""
 echo "Done. Updated:"
 echo "  $PROJECT_DIR/assets/Colomin.icns"
+echo "  $PROJECT_DIR/assets/Colomin.ico"
 echo "  $PROJECT_DIR/assets/app_icon_256.png"
 echo "  $PROJECT_DIR/docs/images/icon.svg"

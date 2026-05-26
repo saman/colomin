@@ -1,3 +1,8 @@
+// Windows GUI subsystem: suppresses the console window that would otherwise
+// open alongside Colomin when launched from Explorer / the Start menu. Only
+// applied on release builds so `cargo run` still has stdout/stderr for logs.
+#![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
+
 mod app;
 #[cfg(target_os = "macos")]
 mod apple_events;
@@ -6,13 +11,15 @@ mod debug_log;
 mod file_open;
 mod state;
 mod ui;
+#[cfg(target_os = "windows")]
+mod windows_ipc;
 
 fn main() {
     // Capture panics to a log file so post-mortem inspection works even when
     // the binary is launched via the .app bundle (no stderr).
     std::panic::set_hook(Box::new(|info| {
         let msg = format!("{}\n{:?}\n", info, std::backtrace::Backtrace::force_capture());
-        let _ = std::fs::write("/tmp/colomin_panic.log", &msg);
+        let _ = std::fs::write(std::env::temp_dir().join("colomin_panic.log"), &msg);
         eprintln!("{}", msg);
     }));
 
@@ -20,8 +27,9 @@ fn main() {
 
     // ── Single-instance check ─────────────────────────────────────────────────
     // When tab mode is enabled: if another Colomin is running and we were
-    // launched with a file, forward the path to it via the Unix socket and exit.
-    // When tab mode is disabled: skip forwarding so each launch is its own process.
+    // launched with a file, forward the path to it (Unix socket / Windows named
+    // pipe) and exit. When tab mode is disabled: skip forwarding so each launch
+    // is its own process.
     #[cfg(unix)]
     if tab_mode {
         if let Some(path) = std::env::args().nth(1).filter(|a| !a.starts_with('-')) {
@@ -32,6 +40,14 @@ fn main() {
                 if stream.write_all(path.as_bytes()).is_ok() {
                     return;
                 }
+            }
+        }
+    }
+    #[cfg(target_os = "windows")]
+    if tab_mode {
+        if let Some(path) = std::env::args().nth(1).filter(|a| !a.starts_with('-')) {
+            if windows_ipc::forward_to_existing_instance(&path) {
+                return;
             }
         }
     }
@@ -51,8 +67,8 @@ fn main() {
         apple_events::install_bootstrap();
     }
 
-    // Unix socket: only used in tab mode for second-launch path forwarding.
-    // In instance mode each process is standalone — no socket needed.
+    // IPC listener: only used in tab mode for second-launch path forwarding.
+    // In instance mode each process is standalone — no listener needed.
     #[cfg(unix)]
     if tab_mode {
         let socket_path = unix_socket_path();
@@ -77,7 +93,11 @@ fn main() {
             });
         }
     }
-    let _ = tx; // tx is moved into the Apple Events handler / socket thread
+    #[cfg(target_os = "windows")]
+    if tab_mode {
+        windows_ipc::install(tx.clone());
+    }
+    let _ = tx; // tx is moved into the Apple Events handler / IPC thread
 
     let ipc_rx: Option<std::sync::mpsc::Receiver<String>> = Some(rx);
 
@@ -123,6 +143,13 @@ fn main() {
 
     let native_options = eframe::NativeOptions {
         viewport,
+        // Use wgpu (DX12/Metal/Vulkan) on Windows because the default glow
+        // backend requires OpenGL 2.0+, which many Windows VMs (UTM, Hyper-V
+        // basic display) don't expose. macOS + Linux keep the default glow
+        // backend — proven on both platforms, and switching could regress
+        // the working pipeline.
+        #[cfg(target_os = "windows")]
+        renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
 

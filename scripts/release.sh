@@ -3,8 +3,9 @@ set -euo pipefail
 
 # Cuts a release: bumps Cargo.toml version, commits, tags, and pushes.
 # GitHub Actions (.github/workflows/release.yml) picks up the tag, builds
-# the universal DMG, and publishes a GitHub Release with auto-generated
-# notes from PRs/commits since the previous tag.
+# .dmg (macOS, signed + notarized), .deb + .AppImage (Linux), and .msi
+# (Windows) via cargo-packager, and publishes a GitHub Release with
+# auto-generated notes from PRs/commits since the previous tag.
 #
 # Usage: ./scripts/release.sh [-t|--tag-only] <version>
 # Example: ./scripts/release.sh 0.2.0

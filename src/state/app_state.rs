@@ -130,13 +130,25 @@ const ROW_CACHE_LIMIT: usize = 5000;
 static THEME_MEMORY_INDEX: AtomicUsize = AtomicUsize::new(0);
 static THEME_EVER_SET: AtomicBool = AtomicBool::new(false);
 
-/// Detect if macOS is in dark mode via `defaults read`.
+/// Detect if the OS is in dark mode.
+///
+/// macOS: queries `defaults read -g AppleInterfaceStyle` (returns "Dark" when
+/// dark mode is on, errors otherwise). On Linux/Windows we don't probe the
+/// system yet — first launch defaults to light, the user can pick a dark
+/// theme manually. A future change could add `dark-light` for native detection.
 fn system_is_dark_mode() -> bool {
-    std::process::Command::new("defaults")
-        .args(["read", "-g", "AppleInterfaceStyle"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().eq_ignore_ascii_case("dark"))
-        .unwrap_or(false)
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("defaults")
+            .args(["read", "-g", "AppleInterfaceStyle"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().eq_ignore_ascii_case("dark"))
+            .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
 }
 
 impl AppState {

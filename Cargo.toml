@@ -1,17 +1,30 @@
 [package]
 name = "colomin"
-version = "0.1.2"
+version = "0.2.0-rc8"
 edition = "2021"
-description = "A native CSV editor built with egui"
+description = "A fast, native CSV editor for macOS, Linux, and Windows."
+homepage = "https://github.com/saman/colomin"
+repository = "https://github.com/saman/colomin"
+license = "AGPL-3.0-or-later"
+readme = "README.md"
+keywords = ["csv", "editor", "spreadsheet", "tsv", "gui"]
+categories = ["gui", "text-editors"]
 
 [dependencies]
-eframe = { version = "0.32", features = [] }
+# `wgpu` feature enables the DirectX 12 / Metal / Vulkan backend in addition
+# to the default `glow` (OpenGL) one. We use wgpu on Windows because many VMs
+# (UTM on Apple Silicon, Hyper-V minimal display, etc.) don't ship OpenGL
+# 2.0+ drivers — eframe with glow then crashes at startup. DX12 works
+# everywhere on Windows 10+, including VMs.
+eframe = { version = "0.32", features = ["wgpu"] }
 egui = { version = "0.32", features = [] }
 egui_extras = { version = "0.32", features = ["svg"] }
 anyhow = "1"
 csv = "1.3"
+dirs = "5"
 fontdb = "0.22"
 image = { version = "0.25", default-features = false, features = ["png"] }
+opener = "0.7"
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -24,18 +37,107 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSURL"] }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+interprocess = "2"
+
+[target.'cfg(target_os = "windows")'.build-dependencies]
+winresource = "0.1"
+
 [profile.dev]
 opt-level = 1
 
-[package.metadata.bundle]
-name = "Colomin"
+# ── cargo-packager (unified macOS / Linux / Windows packaging) ────────────────
+# One config produces .app/.dmg (macOS), .deb/.AppImage (Linux), and .msi (Windows).
+# Code signing + notarization on macOS are driven by env vars at build time:
+#   APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD (cert)
+#   APPLE_API_KEY / APPLE_API_ISSUER / APPLE_API_KEY_PATH (notarization)
+[package.metadata.packager]
+product-name = "Colomin"
 identifier = "com.colomin.app"
-version = "0.1.2"
-copyright = "Copyright © 2025 Colomin"
-category = "public.app-category.productivity"
-short_description = "A native CSV editor"
-icon = ["assets/Colomin.icns"]
-osx_minimum_system_version = "12.0"
+description = "A fast, native CSV editor for macOS, Linux, and Windows."
+long-description = "Colomin is a fast, native CSV editor for macOS, Linux, and Windows. Edit large CSV files like text — open instantly, edit like a spreadsheet, save like a file. Millions of rows, virtualized scrolling, undo/redo, column sort, cell editing, theme support. No cloud, no subscription, no waiting for a worksheet to load."
+authors = ["Colomin"]
+publisher = "Colomin"
+homepage = "https://github.com/saman/colomin"
+copyright = "Copyright © 2026 Colomin"
+category = "Productivity"
+icons = ["assets/app_icon_256.png", "assets/Colomin.icns", "assets/Colomin.ico"]
+out-dir = "dist"
+
+[[package.metadata.packager.binaries]]
+path = "colomin"
+main = true
+
+[[package.metadata.packager.file-associations]]
+extensions = ["csv"]
+description = "CSV File"
+mime-type = "text/csv"
+name = "Colomin CSV File"
+role = "editor"
+
+[[package.metadata.packager.file-associations]]
+extensions = ["tsv"]
+description = "TSV File"
+mime-type = "text/tab-separated-values"
+name = "Colomin TSV File"
+role = "editor"
+
+[[package.metadata.packager.file-associations]]
+extensions = ["txt"]
+description = "Text File"
+mime-type = "text/plain"
+name = "Plain Text File"
+role = "editor"
+
+[package.metadata.packager.macos]
+minimum-system-version = "12.0"
+
+[package.metadata.packager.deb]
+depends = [
+    "libc6",
+    "libgtk-3-0",
+    "libxkbcommon0",
+    "libxkbcommon-x11-0",
+    "libfontconfig1",
+    "libwayland-client0",
+    "libxcb1",
+    "libx11-6",
+]
+# AppStream metainfo so GNOME Software / Discover / App Center show Colomin's
+# name, icon, and description in the pre-install view (without this they fall
+# back to the lowercase `Package` field and a generic icon placeholder).
+[package.metadata.packager.deb.files]
+"assets/linux/com.colomin.app.metainfo.xml" = "/usr/share/metainfo/com.colomin.app.metainfo.xml"
+
+[package.metadata.packager.appimage]
+# Bundle the same metainfo inside the .AppImage so software centers that scan
+# AppImages (e.g. AppImageLauncher integrations) can show proper metadata.
+[package.metadata.packager.appimage.files]
+"assets/linux/com.colomin.app.metainfo.xml" = "/usr/share/metainfo/com.colomin.app.metainfo.xml"
+
+[package.metadata.packager.wix]
+languages = ["en-US"]
+
+# ── cargo-generate-rpm (Fedora/RHEL/openSUSE/Mageia .rpm packages) ────────────
+# cargo-packager doesn't have an RPM backend; cargo-generate-rpm fills the gap.
+# Reads the binary from target/release/colomin (or per-arch target dir on
+# cross-builds) and produces an RPM at target/generate-rpm/.
+[package.metadata.generate-rpm]
+name = "colomin"
+license = "AGPL-3.0-or-later"
+summary = "A fast, native CSV editor for macOS, Linux, and Windows."
+url = "https://github.com/saman/colomin"
+# Auto-detection of shared-lib requires picks up the build host's exact
+# library minor versions, which then refuses to install on different
+# distros / versions. Disable and declare deps by Fedora package name.
+auto-req = "no"
+requires = { gtk3 = "*", libxkbcommon = "*", fontconfig = "*", libwayland-client = "*", libxcb = "*", libX11 = "*" }
+assets = [
+    { source = "target/release/colomin",                              dest = "/usr/bin/colomin",                                              mode = "755" },
+    { source = "assets/linux/colomin.desktop",                        dest = "/usr/share/applications/colomin.desktop",                       mode = "644" },
+    { source = "assets/app_icon_256.png",                             dest = "/usr/share/icons/hicolor/256x256/apps/colomin.png",             mode = "644" },
+    { source = "assets/linux/com.colomin.app.metainfo.xml",           dest = "/usr/share/metainfo/com.colomin.app.metainfo.xml",              mode = "644" },
+]
 
 [profile.release]
 opt-level = 3
