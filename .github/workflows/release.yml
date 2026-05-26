@@ -61,22 +61,51 @@ jobs:
             target/x86_64-apple-darwin/release/colomin
           lipo -info target/release/colomin
 
-      # Preflight: signing and notarization are gated on the presence of
-      # secrets. `secrets.*` can't be used in `if:`, so we surface them as step
-      # outputs via env-loaded checks.
-      - name: Preflight signing config
-        id: pre
+      # Preflight: tagged macOS releases must fail closed. Without every value
+      # below, cargo-packager would either skip signing/notarization or fail
+      # late after producing misleading logs.
+      - name: Preflight signing and notarization config
         env:
-          CERT: ${{ secrets.MACOS_CERTIFICATE }}
-          P8:   ${{ secrets.AC_API_KEY_P8 }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          AC_API_KEY_P8: ${{ secrets.AC_API_KEY_P8 }}
+          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+          AC_API_KEY_ISSUER_ID: ${{ secrets.AC_API_KEY_ISSUER_ID }}
         run: |
-          [ -n "$CERT" ] && echo "has_cert=true" >> "$GITHUB_OUTPUT"
-          [ -n "$P8" ]   && echo "has_key=true"  >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+
+          missing=0
+          for name in \
+            MACOS_SIGNING_IDENTITY \
+            MACOS_CERTIFICATE \
+            MACOS_CERTIFICATE_PWD \
+            AC_API_KEY_P8 \
+            AC_API_KEY_ID \
+            AC_API_KEY_ISSUER_ID
+          do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name GitHub secret is required for signed and notarized macOS releases."
+              missing=1
+            fi
+          done
+
+          placeholder='Developer ID Application: YOUR_NAME_OR_ORG (TEAMID)'
+          if [ "${MACOS_SIGNING_IDENTITY:-}" = "$placeholder" ]; then
+            echo "::error::Replace the MACOS_SIGNING_IDENTITY placeholder with your Developer ID Application identity."
+            missing=1
+          elif ! printf '%s\n' "${MACOS_SIGNING_IDENTITY:-}" | grep -Eq '^Developer ID Application: .+ \([A-Z0-9]{10}\)$'; then
+            echo "::error::MACOS_SIGNING_IDENTITY must look like: Developer ID Application: Name (TEAMID)."
+            missing=1
+          fi
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
 
       # Write the App Store Connect API key to disk so cargo-packager can read
       # it via APPLE_API_KEY_PATH during notarization.
       - name: Materialize notary API key
-        if: ${{ steps.pre.outputs.has_key == 'true' }}
         id: notary
         env:
           AC_API_KEY_P8: ${{ secrets.AC_API_KEY_P8 }}
@@ -87,13 +116,7 @@ jobs:
           chmod 600 "$KEY_PATH"
           echo "key_path=$KEY_PATH" >> "$GITHUB_OUTPUT"
 
-      # Export notarization env vars only when has_key is true. Setting any of
-      # APPLE_API_KEY/_ISSUER/_KEY_PATH to an empty string still trips
-      # cargo-packager into attempting notarization (it sees var-is-set, then
-      # fails on the empty path). $GITHUB_ENV is the only way to *not* set them
-      # at all in the next step.
-      - name: Export notarization env (when has_key)
-        if: ${{ steps.pre.outputs.has_key == 'true' }}
+      - name: Export notarization env
         env:
           KEY_ID:    ${{ secrets.AC_API_KEY_ID }}
           ISSUER_ID: ${{ secrets.AC_API_KEY_ISSUER_ID }}
@@ -103,11 +126,27 @@ jobs:
           echo "APPLE_API_ISSUER=$ISSUER_ID"  >> "$GITHUB_ENV"
           echo "APPLE_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
 
+      # cargo-packager 0.11.x only signs/notarizes macOS apps when the
+      # `signing-identity` field exists in the packager config. Keep the repo
+      # config identity-free for local unsigned packaging, then inject the real
+      # Developer ID identity only inside the release runner.
+      - name: Inject macOS signing identity
+        env:
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: |
+          ruby -0777 -i -pe '
+            identity = ENV.fetch("MACOS_SIGNING_IDENTITY")
+            replacement = "[package.metadata.packager.macos]\nminimum-system-version = \"12.0\"\nsigning-identity = #{identity.dump}\n"
+            unless $_.sub!(/\[package\.metadata\.packager\.macos\]\nminimum-system-version = "12\.0"\n/, replacement)
+              abort("failed to inject macOS signing identity into Cargo.toml")
+            end
+          ' Cargo.toml
+          grep -A2 '^\[package.metadata.packager.macos\]' Cargo.toml
+
       # cargo-packager reads APPLE_CERTIFICATE + APPLE_CERTIFICATE_PASSWORD to
       # import the signing cert into a temp keychain itself. Notarization picks
-      # up APPLE_API_KEY/_ISSUER/_KEY_PATH from the env exported above (only
-      # set when has_key is true).
-      - name: Package (.app + .dmg, signed; notarized when has_key)
+      # up APPLE_API_KEY/_ISSUER/_KEY_PATH from the env exported above.
+      - name: Package (.app + .dmg, signed + app-notarized)
         env:
           APPLE_CERTIFICATE:          ${{ secrets.MACOS_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
@@ -117,6 +156,26 @@ jobs:
         run: |
           mv dist/*.dmg dist/Colomin.dmg
           ls -la dist/
+
+      # The release asset is the DMG, so notarize and staple that final
+      # container too. cargo-packager already notarizes the .app bundle.
+      - name: Notarize and staple DMG
+        run: |
+          xcrun notarytool submit dist/Colomin.dmg \
+            --key-id "$APPLE_API_KEY" \
+            --key "$APPLE_API_KEY_PATH" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait
+          xcrun stapler staple -v dist/Colomin.dmg
+
+      - name: Verify macOS signatures and notarization tickets
+        run: |
+          codesign --verify --deep --strict --verbose=2 dist/Colomin.app
+          spctl -a -vvv -t exec dist/Colomin.app
+          xcrun stapler validate dist/Colomin.app
+          codesign --verify --verbose=2 dist/Colomin.dmg
+          spctl -a -vvv -t open --context context:primary-signature dist/Colomin.dmg
+          xcrun stapler validate dist/Colomin.dmg
 
       - uses: actions/upload-artifact@v4
         with:

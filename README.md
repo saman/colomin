@@ -57,6 +57,17 @@ Artifacts (per OS, written to `dist/` and `target/generate-rpm/`):
 
 CI does this automatically for every `v*` tag — see `.github/workflows/release.yml`.
 
+macOS releases fail unless these GitHub Actions secrets are set:
+
+| Secret | Placeholder / expected value |
+|--------|------------------------------|
+| `MACOS_SIGNING_IDENTITY` | `Developer ID Application: YOUR_NAME_OR_ORG (TEAMID)` |
+| `MACOS_CERTIFICATE` | Base64-encoded Developer ID Application `.p12` certificate |
+| `MACOS_CERTIFICATE_PWD` | Password used when exporting the `.p12` |
+| `AC_API_KEY_P8` | App Store Connect API key `.p8` contents |
+| `AC_API_KEY_ID` | App Store Connect API key ID |
+| `AC_API_KEY_ISSUER_ID` | App Store Connect issuer ID |
+
 For quick local iteration on macOS:
 
 ```bash

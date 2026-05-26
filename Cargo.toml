@@ -51,6 +51,8 @@ opt-level = 1
 # Code signing + notarization on macOS are driven by env vars at build time:
 #   APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD (cert)
 #   APPLE_API_KEY / APPLE_API_ISSUER / APPLE_API_KEY_PATH (notarization)
+# Release CI injects the signing identity from the MACOS_SIGNING_IDENTITY secret.
+# Placeholder value: Developer ID Application: YOUR_NAME_OR_ORG (TEAMID)
 [package.metadata.packager]
 product-name = "Colomin"
 identifier = "com.colomin.app"
@@ -91,6 +93,8 @@ role = "editor"
 
 [package.metadata.packager.macos]
 minimum-system-version = "12.0"
+# release.yml injects `signing-identity` here from MACOS_SIGNING_IDENTITY.
+# Placeholder value: Developer ID Application: YOUR_NAME_OR_ORG (TEAMID)
 
 [package.metadata.packager.deb]
 depends = [
