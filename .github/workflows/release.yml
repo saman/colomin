@@ -130,11 +130,31 @@ jobs:
           prerelease: false
           generate_release_notes: true
 
-  # ── Linux: .deb + .AppImage ────────────────────────────────────────────────
+  # ── Linux: .deb + .AppImage (x86_64 + arm64) ───────────────────────────────
+  # Two native runners — no cross-compilation. GitHub Actions ships free arm64
+  # Linux runners since 2025 (`ubuntu-22.04-arm`). Each job produces a .deb
+  # and a .AppImage matching its host architecture.
   build-linux:
-    name: Linux (.deb + .AppImage)
-    runs-on: ubuntu-22.04
+    name: Linux ${{ matrix.arch }} (.deb + .AppImage)
+    runs-on: ${{ matrix.runner }}
     needs: verify-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+            # cargo-packager appends `_amd64` to .deb names and `_x86_64` to .AppImage.
+            deb_pattern: "*amd64.deb"
+            deb_asset: "Colomin.deb"
+            appimage_pattern: "*x86_64.AppImage"
+            appimage_asset: "Colomin-x86_64.AppImage"
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+            deb_pattern: "*arm64.deb"
+            deb_asset: "Colomin-arm64.deb"
+            appimage_pattern: "*aarch64.AppImage"
+            appimage_asset: "Colomin-aarch64.AppImage"
     steps:
       - uses: actions/checkout@v4
 
@@ -143,6 +163,8 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.arch }}
 
       # eframe runtime deps (GTK + xkbcommon + fontconfig + Wayland/X11 baseline)
       # plus AppImage tooling (fuse for AppImage runtime, file utils).
@@ -165,31 +187,47 @@ jobs:
 
       - name: Rename artifacts to stable asset names
         run: |
-          mv dist/*.deb dist/Colomin.deb
-          mv dist/*.AppImage dist/Colomin-x86_64.AppImage
+          mv dist/${{ matrix.deb_pattern }}      dist/${{ matrix.deb_asset }}
+          mv dist/${{ matrix.appimage_pattern }} dist/${{ matrix.appimage_asset }}
           ls -la dist/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Colomin-linux
+          name: Colomin-linux-${{ matrix.arch }}
           path: |
-            dist/Colomin.deb
-            dist/Colomin-x86_64.AppImage
+            dist/${{ matrix.deb_asset }}
+            dist/${{ matrix.appimage_asset }}
 
       - uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/Colomin.deb
-            dist/Colomin-x86_64.AppImage
+            dist/${{ matrix.deb_asset }}
+            dist/${{ matrix.appimage_asset }}
           draft: false
           prerelease: false
           generate_release_notes: true
 
-  # ── Windows: .msi via WiX ──────────────────────────────────────────────────
+  # ── Windows: .msi via WiX (x86_64 + arm64) ─────────────────────────────────
+  # Native runners for each arch — `windows-latest` is x86_64,
+  # `windows-11-arm` is arm64 (free for public repos since 2025). Each job
+  # produces an arch-tagged MSI.
   build-windows:
-    name: Windows (.msi)
-    runs-on: windows-latest
+    name: Windows ${{ matrix.arch }} (.msi)
+    runs-on: ${{ matrix.runner }}
     needs: verify-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: windows-latest
+            # cargo-packager appends `_x64_en-US` to MSI names on x86_64.
+            msi_pattern: "*x64*.msi"
+            msi_asset: "Colomin.msi"
+          - arch: arm64
+            runner: windows-11-arm
+            msi_pattern: "*arm64*.msi"
+            msi_asset: "Colomin-arm64.msi"
     steps:
       - uses: actions/checkout@v4
 
@@ -198,6 +236,8 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.arch }}
 
       - name: Install cargo-packager
         run: cargo install cargo-packager --locked
@@ -207,7 +247,7 @@ jobs:
       # "0.2.0-rc1" but WiX rejects them. Strip any prerelease/build suffix
       # from Cargo.toml's `version = "..."` line *for the MSI build only*.
       # The .deb / .AppImage / .dmg builds use the unmodified version from
-      # main / their own runners, so cross-arch parity is preserved.
+      # their own runners, so cross-arch parity is preserved.
       - name: Patch version for MSI (strip prerelease suffix)
         shell: pwsh
         run: |
@@ -226,18 +266,18 @@ jobs:
       - name: Rename MSI to stable asset name
         shell: pwsh
         run: |
-          $msi = Get-ChildItem dist\*.msi | Select-Object -First 1
-          Move-Item $msi.FullName dist\Colomin.msi
+          $msi = Get-ChildItem dist\${{ matrix.msi_pattern }} | Select-Object -First 1
+          Move-Item $msi.FullName dist\${{ matrix.msi_asset }}
           Get-ChildItem dist\
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Colomin-windows
-          path: dist/Colomin.msi
+          name: Colomin-windows-${{ matrix.arch }}
+          path: dist/${{ matrix.msi_asset }}
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/Colomin.msi
+          files: dist/${{ matrix.msi_asset }}
           draft: false
           prerelease: false
           generate_release_notes: true
