@@ -321,20 +321,26 @@ pub fn read_chunk_with_delim(
 pub fn search_rows(
     path: &Path,
     row_offsets: &[u64],
+    row_sources: Option<&[(usize, usize)]>,
     edits: &HashMap<(usize, usize), String>,
     query: &str,
     column_index: Option<usize>,
     col_count: usize,
     delimiter: u8,
+    case_sensitive: bool,
+    regex_enabled: bool,
 ) -> Result<SearchResult, String> {
     crate::csv_engine::query::search_rows(
         path,
         row_offsets,
+        row_sources,
         edits,
         query,
         column_index,
         col_count,
         delimiter,
+        case_sensitive,
+        regex_enabled,
     )
 }
 

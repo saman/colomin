@@ -24,7 +24,7 @@ struct TabState {
     /// Consumed (minus the sort, which is applied in the background loader) once the file finishes loading.
     pending_settings: Option<FileSettings>,
     sorting_rx: Option<std::sync::mpsc::Receiver<Result<SortResult, String>>>,
-    searching_rx: Option<std::sync::mpsc::Receiver<Result<crate::csv_engine::types::SearchResult, String>>>,
+    searching_rx: Option<std::sync::mpsc::Receiver<Result<(String, bool, bool, u64, crate::csv_engine::types::SearchResult), String>>>,
     stats_rx: Option<std::sync::mpsc::Receiver<(String, crate::ui::stats::Stats)>>,
     /// Cancellation flag for the in-flight stats computation (if any).
     /// Setting it true tells the background thread to exit early.
@@ -442,6 +442,7 @@ impl eframe::App for ColominApp {
                         });
                         tab.state.clear_cache();
                         tab.state.invalidate_row_layout();
+                        tab.state.invalidate_search_after_data_change();
                     }
                     tab.sorting_rx = None;
                     tab.state.is_sorting = false;
@@ -489,8 +490,15 @@ impl eframe::App for ColominApp {
         // ── Poll background search ──
         if let Some(rx) = &tab.searching_rx {
             match rx.try_recv() {
-                Ok(Ok(result)) => {
-                    tab.state.apply_search_results(result.row_indices);
+                Ok(Ok((query, case_sensitive, regex_enabled, cache_version, result))) => {
+                    if tab.state.show_search
+                        && tab.state.search_query == query
+                        && tab.state.search_case_sensitive == case_sensitive
+                        && tab.state.search_regex == regex_enabled
+                        && tab.state.cache_version == cache_version
+                    {
+                        tab.state.apply_search_results(result.matches);
+                    }
                     tab.searching_rx = None;
                     ctx.request_repaint();
                 }
@@ -606,18 +614,33 @@ impl eframe::App for ColominApp {
                 if query.is_empty() {
                     tab.state.search_results.clear();
                     tab.state.search_results_set.clear();
-                    tab.state.search_cursor = 0;
+                    tab.state.search_cursor = None;
                 } else if let Some(ref file) = tab.state.file {
+                    let query_for_thread = query.clone();
                     let path = file.file_path.clone();
                     let row_offsets = file.row_offsets.clone();
+                    let row_sources = tab.state.search_row_sources_if_needed();
                     let edits = file.edits.clone();
                     let col_count = file.metadata.columns.len();
                     let delimiter = file.delimiter;
+                    let case_sensitive = tab.state.search_case_sensitive;
+                    let regex_enabled = tab.state.search_regex;
+                    let cache_version = tab.state.cache_version;
                     let (tx, rx) = std::sync::mpsc::channel();
                     std::thread::spawn(move || {
                         let result = crate::csv_engine::query::search_rows(
-                            &path, &row_offsets, &edits, &query, None, col_count, delimiter,
-                        );
+                            &path,
+                            &row_offsets,
+                            row_sources.as_deref(),
+                            &edits,
+                            &query_for_thread,
+                            None,
+                            col_count,
+                            delimiter,
+                            case_sensitive,
+                            regex_enabled,
+                        )
+                        .map(|result| (query_for_thread, case_sensitive, regex_enabled, cache_version, result));
                         let _ = tx.send(result);
                     });
                     tab.searching_rx = Some(rx);
@@ -693,7 +716,10 @@ impl eframe::App for ColominApp {
         if save_file { Self::handle_save_tab(tab); }
 
         let search_shortcut = ctx.input(|i| i.key_pressed(egui::Key::F) && i.modifiers.command);
-        if search_shortcut { tab.state.show_search = true; }
+        if search_shortcut {
+            tab.table.commit_active_edit(&mut tab.state);
+            tab.state.show_search = true;
+        }
 
         // Cmd+Shift+T: cycle theme.
         let cycle_theme = ctx.input(|i| {
@@ -1121,19 +1147,56 @@ impl eframe::App for ColominApp {
         let mut search_close = false;
         let mut search_nav: i32 = 0;
         let mut search_query_changed = false;
+        let mut search_case_changed = false;
+        let mut search_regex_changed = false;
+        let search_field_id = egui::Id::new("search_bar_input");
 
         if tab.state.show_search {
             let theme = tab.state.current_theme();
             let text_pri = theme.text_primary;
             let text_sec = theme.text_secondary;
             let prev_query = tab.state.search_query.clone();
-            let field_id = egui::Id::new("search_bar_input");
             egui::TopBottomPanel::bottom("search_bar")
                 .exact_height(36.0)
                 .frame(egui::Frame::NONE.fill(theme.status_bar_bg))
                 .show(ctx, |ui| {
                     ui.horizontal_centered(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
                         ui.add_space(10.0);
+
+                        let regex_active = tab.state.search_regex;
+                        let regex_button = egui::Button::new(
+                            egui::RichText::new(".*")
+                                .size(12.0)
+                                .color(if regex_active { theme.accent } else { text_sec }),
+                        )
+                        .fill(if regex_active { theme.accent_subtle } else { egui::Color32::TRANSPARENT })
+                        .stroke(egui::Stroke::new(1.0, if regex_active { theme.accent } else { theme.border }))
+                        .min_size(egui::vec2(30.0, 22.0))
+                        .corner_radius(egui::CornerRadius::same(4));
+                        if ui.add(regex_button).on_hover_text("Regex").clicked() {
+                            tab.state.search_regex = !tab.state.search_regex;
+                            search_regex_changed = true;
+                        }
+
+                        ui.add_space(4.0);
+
+                        let case_active = tab.state.search_case_sensitive;
+                        let case_button = egui::Button::new(
+                            egui::RichText::new("Aa")
+                                .size(12.0)
+                                .color(if case_active { theme.accent } else { text_sec }),
+                        )
+                        .fill(if case_active { theme.accent_subtle } else { egui::Color32::TRANSPARENT })
+                        .stroke(egui::Stroke::new(1.0, if case_active { theme.accent } else { theme.border }))
+                        .min_size(egui::vec2(30.0, 22.0))
+                        .corner_radius(egui::CornerRadius::same(4));
+                        if ui.add(case_button).on_hover_text("Case sensitive").clicked() {
+                            tab.state.search_case_sensitive = !tab.state.search_case_sensitive;
+                            search_case_changed = true;
+                        }
+
+                        ui.add_space(8.0);
 
                         // Search icon (non-interactive leading glyph)
                         let icon_sz = egui::vec2(15.0, 15.0);
@@ -1141,16 +1204,51 @@ impl eframe::App for ColominApp {
                         crate::ui::icons::icon("search", text_sec).paint_at(ui, search_icon_rect);
                         ui.add_space(6.0);
 
+                        let match_text = if tab.state.search_query.is_empty() {
+                            String::new()
+                        } else if tab.state.search_results.is_empty() {
+                            "No matches".to_string()
+                        } else if let Some(cursor) = tab.state.search_cursor {
+                            format!("{} of {}", cursor + 1, tab.state.search_results.len())
+                        } else {
+                            let n = tab.state.search_results.len();
+                            if n == 1 {
+                                "1 match".to_string()
+                            } else {
+                                format!("{} matches", n)
+                            }
+                        };
+                        let match_text_w = ui.fonts(|f| {
+                            f.layout_no_wrap(
+                                match_text.clone(),
+                                egui::FontId::proportional(12.0),
+                                text_sec,
+                            ).size().x
+                        });
+
                         // Text field
+                        let right_controls_w = match_text_w + 88.0;
+                        let field_w = (ui.available_width() - right_controls_w).max(64.0);
                         let te = egui::TextEdit::singleline(&mut tab.state.search_query)
-                            .id(field_id)
+                            .id(search_field_id)
                             .hint_text("Find in table…")
                             .frame(false)
-                            .desired_width(200.0);
-                        let resp = ui.add(te);
+                            .desired_width((field_w - 16.0).max(48.0));
+                        let input_frame = egui::Frame::NONE
+                            .fill(theme.surface)
+                            .stroke(egui::Stroke::new(1.0, theme.border))
+                            .corner_radius(egui::CornerRadius::same(4))
+                            .inner_margin(egui::Margin::symmetric(8, 1))
+                            .outer_margin(egui::Margin { left: 0, right: 0, top: 3, bottom: 3 });
+                        let resp = input_frame
+                            .show(ui, |ui| {
+                                ui.set_min_width((field_w - 16.0).max(48.0));
+                                ui.add(te)
+                            })
+                            .inner;
                         ctx.memory_mut(|m| {
-                            if m.focused() != Some(field_id) {
-                                m.request_focus(field_id);
+                            if m.focused() != Some(search_field_id) {
+                                m.request_focus(search_field_id);
                             }
                         });
                         if tab.state.search_query != prev_query {
@@ -1171,13 +1269,6 @@ impl eframe::App for ColominApp {
                         ui.add_space(10.0);
 
                         // Match count
-                        let match_text = if tab.state.search_query.is_empty() {
-                            String::new()
-                        } else if tab.state.search_results.is_empty() {
-                            "No matches".to_string()
-                        } else {
-                            format!("{} of {}", tab.state.search_cursor + 1, tab.state.search_results.len())
-                        };
                         ui.label(egui::RichText::new(match_text).color(text_sec).size(12.0));
 
                         ui.add_space(6.0);
@@ -1210,34 +1301,43 @@ impl eframe::App for ColominApp {
         }
 
         let tab = &mut self.tabs[self.active_tab];
+        if search_close || search_nav != 0 {
+            tab.state.suppress_table_keyboard_once = true;
+        }
         if search_close {
             tab.state.show_search = false;
             tab.state.search_query.clear();
             tab.state.search_results.clear();
             tab.state.search_results_set.clear();
-            tab.state.search_cursor = 0;
+            tab.state.search_cursor = None;
+            tab.state.search_scroll_to = None;
+            tab.state.pending_search = None;
+            ctx.memory_mut(|m| m.surrender_focus(search_field_id));
         }
-        if search_query_changed {
+        if search_query_changed || search_case_changed || search_regex_changed {
+            tab.state.search_results.clear();
+            tab.state.search_results_set.clear();
             tab.state.pending_search = Some(tab.state.search_query.clone());
-            tab.state.search_cursor = 0;
+            tab.state.search_cursor = None;
         }
         if search_nav != 0 && !tab.state.search_results.is_empty() {
             let n = tab.state.search_results.len();
-            tab.state.search_cursor = if search_nav > 0 {
-                (tab.state.search_cursor + 1) % n
-            } else if tab.state.search_cursor == 0 {
-                n - 1
+            let current = tab.state.search_cursor;
+            let next = if search_nav > 0 {
+                current.map_or(0, |cursor| (cursor + 1) % n)
+            } else if let Some(cursor) = current {
+                if cursor == 0 { n - 1 } else { cursor - 1 }
             } else {
-                tab.state.search_cursor - 1
+                n - 1
             };
-            if let Some(actual_row) = tab.state.search_results.get(tab.state.search_cursor).copied() {
-                let display_row_count = tab.state.display_row_count();
-                for dr in 0..display_row_count {
-                    if tab.state.display_row_to_actual_row(dr) == Some(actual_row) {
-                        tab.state.search_scroll_to = Some(dr);
-                        break;
-                    }
-                }
+            tab.state.search_cursor = Some(next);
+            if let Some(coord) = tab.state.active_search_cell() {
+                tab.state.selection_type = Some(crate::state::SelectionType::Cell);
+                tab.state.selection_anchor = Some(coord);
+                tab.state.selection_focus = Some(coord);
+                tab.state.selected_rows.clear();
+                tab.state.selected_columns.clear();
+                tab.state.search_scroll_to = Some(coord);
             }
         }
 

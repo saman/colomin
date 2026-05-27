@@ -4,6 +4,8 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use crate::csv_engine::types::SearchMatch;
+
 use super::{CellCoord, EditAction, OpenFile, PreferredStat, SelectionType, SortState};
 
 /// Cached row position layout. Avoids O(N) prefix-sum recomputation per frame.
@@ -52,12 +54,15 @@ pub struct AppState {
     pub row_height: f32,
     pub row_heights: HashMap<usize, f32>,
     pub search_query: String,
-    pub search_results: Vec<usize>,
-    pub search_results_set: HashSet<usize>,
-    pub search_cursor: usize,
+    pub search_results: Vec<SearchMatch>,
+    pub search_results_set: HashSet<SearchMatch>,
+    pub search_cursor: Option<usize>,
     pub pending_search: Option<String>,
-    pub search_scroll_to: Option<usize>,
+    pub search_scroll_to: Option<CellCoord>,
+    pub search_case_sensitive: bool,
+    pub search_regex: bool,
     pub show_search: bool,
+    pub suppress_table_keyboard_once: bool,
     pub show_command_palette: bool,
     pub toast_message: Option<String>,
     /// Pending sort request (column index, ascending) set by UI actions.
@@ -188,10 +193,13 @@ impl AppState {
             search_query: String::new(),
             search_results: Vec::new(),
             search_results_set: HashSet::new(),
-            search_cursor: 0,
+            search_cursor: None,
             pending_search: None,
             search_scroll_to: None,
+            search_case_sensitive: false,
+            search_regex: false,
             show_search: false,
+            suppress_table_keyboard_once: false,
             show_command_palette: false,
             toast_message: None,
             pending_sort: None,
@@ -240,10 +248,49 @@ impl AppState {
         }
     }
 
-    pub fn apply_search_results(&mut self, rows: Vec<usize>) {
-        self.search_results_set = rows.iter().cloned().collect();
-        self.search_results = rows;
-        self.search_cursor = 0;
+    pub fn apply_search_results(&mut self, matches: Vec<SearchMatch>) {
+        self.search_results_set = matches.iter().copied().collect();
+        self.search_results = matches;
+        self.search_cursor = None;
+    }
+
+    pub fn invalidate_search_after_data_change(&mut self) {
+        if self.search_query.is_empty() {
+            return;
+        }
+        self.search_results.clear();
+        self.search_results_set.clear();
+        self.search_cursor = None;
+        self.search_scroll_to = None;
+        if self.show_search {
+            self.pending_search = Some(self.search_query.clone());
+        }
+    }
+
+    pub fn search_row_sources(&self) -> Vec<(usize, usize)> {
+        let Some(file) = self.file.as_ref() else { return Vec::new() };
+        (0..file.effective_row_count())
+            .filter_map(|virtual_row| {
+                if let Some(ref order) = file.row_order {
+                    match order.get(virtual_row).copied()? {
+                        super::RowSource::Original(source_row) => Some((virtual_row, source_row)),
+                        super::RowSource::Inserted(_) => None,
+                    }
+                } else {
+                    Some((virtual_row, file.virtual_to_actual_row(virtual_row)))
+                }
+            })
+            .filter(|&(_, source_row)| source_row < file.row_offsets.len())
+            .collect()
+    }
+
+    pub fn search_row_sources_if_needed(&self) -> Option<Vec<(usize, usize)>> {
+        let file = self.file.as_ref()?;
+        if file.row_order.is_some() || file.sort_permutation.is_some() || file.filter_indices.is_some() {
+            Some(self.search_row_sources())
+        } else {
+            None
+        }
     }
 
     pub fn effective_row_count(&self) -> usize {
@@ -269,6 +316,60 @@ impl AppState {
         } else {
             Some(display_row)
         }
+    }
+
+    pub fn display_row_to_source_row(&self, display_row: usize) -> Option<usize> {
+        let virtual_row = self.display_row_to_actual_row(display_row)?;
+        let file = self.file.as_ref()?;
+        if let Some(ref order) = file.row_order {
+            match order.get(virtual_row).copied()? {
+                super::RowSource::Original(row) => Some(row),
+                super::RowSource::Inserted(_) => None,
+            }
+        } else {
+            Some(file.virtual_to_actual_row(virtual_row))
+        }
+    }
+
+    pub fn display_col_to_source_col(&self, display_col: usize) -> Option<usize> {
+        let file = self.file.as_ref()?;
+        if let Some(ref order) = file.col_order {
+            match order.get(display_col).copied()? {
+                super::ColSource::Original(col) => Some(col),
+                super::ColSource::Inserted(_) => None,
+            }
+        } else if display_col < file.original_col_count {
+            Some(display_col)
+        } else {
+            None
+        }
+    }
+
+    pub fn search_match_for_display_cell(
+        &self,
+        display_row: usize,
+        display_col: usize,
+    ) -> Option<SearchMatch> {
+        Some(SearchMatch {
+            row_index: self.display_row_to_actual_row(display_row)?,
+            column_index: self.display_col_to_source_col(display_col)?,
+        })
+    }
+
+    pub fn search_match_to_display_cell(&self, search_match: SearchMatch) -> Option<CellCoord> {
+        let row = self.actual_row_to_display_row(search_match.row_index);
+        if row >= self.display_row_count() {
+            return None;
+        }
+        let col = (0..self.col_count())
+            .find(|&display_col| self.display_col_to_source_col(display_col) == Some(search_match.column_index))?;
+        Some(CellCoord { row, col })
+    }
+
+    pub fn active_search_cell(&self) -> Option<CellCoord> {
+        let cursor = self.search_cursor?;
+        let search_match = self.search_results.get(cursor).copied()?;
+        self.search_match_to_display_cell(search_match)
     }
 
     pub fn actual_row_to_display_row(&self, actual_row: usize) -> usize {

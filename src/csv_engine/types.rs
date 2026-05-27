@@ -54,8 +54,17 @@ pub struct FilterCriteria {
     pub value: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SearchMatch {
+    /// Display-space data row index, excluding the synthetic header row.
+    pub row_index: usize,
+    /// Physical CSV column index.
+    pub column_index: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct SearchResult {
+    pub matches: Vec<SearchMatch>,
     pub row_indices: Vec<usize>,
     pub total_matches: usize,
 }
