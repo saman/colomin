@@ -718,6 +718,7 @@ impl eframe::App for ColominApp {
         let search_shortcut = ctx.input(|i| i.key_pressed(egui::Key::F) && i.modifiers.command);
         if search_shortcut {
             tab.table.commit_active_edit(&mut tab.state);
+            tab.state.focus_search_input = true;
             tab.state.show_search = true;
         }
 
@@ -1246,11 +1247,10 @@ impl eframe::App for ColominApp {
                                 ui.add(te)
                             })
                             .inner;
-                        ctx.memory_mut(|m| {
-                            if m.focused() != Some(search_field_id) {
-                                m.request_focus(search_field_id);
-                            }
-                        });
+                        if tab.state.focus_search_input {
+                            ctx.memory_mut(|m| m.request_focus(search_field_id));
+                            tab.state.focus_search_input = false;
+                        }
                         if tab.state.search_query != prev_query {
                             search_query_changed = true;
                         }
@@ -1312,6 +1312,7 @@ impl eframe::App for ColominApp {
             tab.state.search_cursor = None;
             tab.state.search_scroll_to = None;
             tab.state.pending_search = None;
+            tab.state.focus_search_input = false;
             ctx.memory_mut(|m| m.surrender_focus(search_field_id));
         }
         if search_query_changed || search_case_changed || search_regex_changed {
