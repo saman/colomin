@@ -325,6 +325,12 @@ impl TableView {
         self.col_resize.is_some() || self.row_resize.is_some()
     }
 
+    pub fn commit_active_edit(&mut self, state: &mut AppState) {
+        if let Some((row, col, value)) = self.editing.take() {
+            commit_edit(state, row, col, value);
+        }
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui, state: &mut AppState, ctx: &egui::Context) {
         let Some(_) = state.file else { return };
 
@@ -425,6 +431,7 @@ impl TableView {
         let border          = colors.border;
         let hover_row_color = colors.hover_row;
         let search_color    = colors.search_match;
+        let search_query_lower = state.search_query.to_lowercase();
         let header_sep = border;
         let gutter_sep = border;
 
@@ -534,16 +541,27 @@ impl TableView {
         }
 
         // ── Scroll to search match navigation target ──
-        if let Some(target_row) = state.search_scroll_to.take() {
+        if let Some(target) = state.search_scroll_to.take() {
             state.ensure_row_layout();
-            let row_top = state.row_top(target_row);
-            let row_h   = state.row_height_for(target_row);
+            let row_top = state.row_top(target.row);
+            let row_h   = state.row_height_for(target.row);
             let v_vp    = self.v_viewport_h;
             if v_vp > 0.0 {
                 if row_top < self.v_scroll_y {
                     self.v_scroll_y = row_top;
                 } else if row_top + row_h > self.v_scroll_y + v_vp {
                     self.v_scroll_y = (row_top + row_h - v_vp).max(0.0);
+                }
+            }
+
+            let col_left: f32 = (0..target.col).map(|c| state.column_width(c)).sum();
+            let col_w = state.column_width(target.col);
+            let h_vp = (self.h_viewport_w - gutter_width).max(0.0);
+            if h_vp > 0.0 {
+                if col_left < self.h_scroll_x {
+                    self.h_scroll_x = col_left;
+                } else if col_left + col_w > self.h_scroll_x + h_vp {
+                    self.h_scroll_x = (col_left + col_w - h_vp).max(0.0);
                 }
             }
         }
@@ -594,10 +612,21 @@ impl TableView {
                         }
                         // Capture rect for the header overlay repaint.
                         { let mut v = header_col_rects.take(); v.push((rect, col_idx)); header_col_rects.set(v); }
-                        // Highlight header when the column is selected.
+                        // Highlight header when the column is selected or has a search match.
                         let col_selected = state.selection_type == Some(SelectionType::Column)
                             && state.selected_columns.contains(&col_idx);
-                        let effective_hdr_bg = if col_selected { sel_color } else { header_bg };
+                        let col_search_match = !search_query_lower.is_empty()
+                            && state
+                                .display_col_to_source_col(col_idx)
+                                .map(|col| {
+                                    state.search_results.iter().any(|search_match| {
+                                        search_match.column_index == col
+                                    })
+                                })
+                                .unwrap_or(false);
+                        let effective_hdr_bg = if col_selected { sel_color }
+                                               else if col_search_match { search_color }
+                                               else { header_bg };
                         ui.painter().rect_filled(rect, 0.0, effective_hdr_bg);
                         if rect.right() > header_right_x.get() { header_right_x.set(rect.right()); }
                         let _is_sorted = sort_col == Some(col_idx); // superseded by is_sorted_here below
@@ -775,6 +804,7 @@ impl TableView {
                                         if let Some(f) = state.file.as_mut() {
                                             f.sort_permutation = None;
                                         }
+                                        state.invalidate_search_after_data_change();
                                         ui.close();
                                     }
                                 }
@@ -884,7 +914,6 @@ impl TableView {
                 // body_out.content_size.y by one row, which the custom scrollbar
                 // picks up automatically.
                 let pad = if row_count > 0 { Some(state.row_height) } else { None };
-                let search_query_lower = state.search_query.to_lowercase();
                 body.heterogeneous_rows(heights.into_iter().chain(pad), |mut row| {
                     let display_row = row.index();
 
@@ -933,9 +962,10 @@ impl TableView {
                                 && ctx.input(|i| i.pointer.hover_pos()
                                     .map(|p| ui.max_rect().y_range().contains(p.y) && panel_rect.contains(p))
                                     .unwrap_or(false));
-                            let is_search_row = !search_query_lower.is_empty()
-                                && state.display_row_to_actual_row(display_row)
-                                    .map(|ar| state.search_results_set.contains(&ar))
+                            let is_search_match = !search_query_lower.is_empty()
+                                && state
+                                    .search_match_for_display_cell(display_row, col_idx)
+                                    .map(|search_match| state.search_results_set.contains(&search_match))
                                     .unwrap_or(false);
                             let bg = if cell_sel || row_sel { sel_color }
                                      else if row_hov { hover_row_color }
@@ -1024,9 +1054,7 @@ impl TableView {
 
                                 // Fetch value before painting so we can do per-cell search highlight.
                                 let value = get_cell(state, display_row, col_idx);
-                                let cell_bg = if is_search_row
-                                    && value.to_lowercase().contains(&search_query_lower)
-                                { search_color } else { bg };
+                                let cell_bg = if is_search_match { search_color } else { bg };
 
                                 // Paint after interaction registration.
                                 ui.painter().rect_filled(resp.rect, 0.0, cell_bg);
@@ -1152,6 +1180,7 @@ impl TableView {
                                             if let Some(f) = state.file.as_mut() {
                                                 f.sort_permutation = None;
                                             }
+                                            state.invalidate_search_after_data_change();
                                             ui.close();
                                         }
                                     }
@@ -1236,7 +1265,19 @@ impl TableView {
                         if renaming_col == Some(*col_idx) { continue; }
                         let col_selected = state.selection_type == Some(SelectionType::Column)
                             && state.selected_columns.contains(col_idx);
-                        painter.rect_filled(*rect, 0.0, if col_selected { sel_color } else { header_bg });
+                        let col_search_match = !search_query_lower.is_empty()
+                            && state
+                                .display_col_to_source_col(*col_idx)
+                                .map(|col| {
+                                    state.search_results.iter().any(|search_match| {
+                                        search_match.column_index == col
+                                    })
+                                })
+                                .unwrap_or(false);
+                        let hdr_bg = if col_selected { sel_color }
+                                     else if col_search_match { search_color }
+                                     else { header_bg };
+                        painter.rect_filled(*rect, 0.0, hdr_bg);
                         let phys = state.display_to_physical_col(*col_idx);
                         let is_sorted_here = sort_col == Some(phys);
                         let label_color = if is_sorted_here { accent } else { text_pri };
@@ -1649,7 +1690,11 @@ impl TableView {
                         .unwrap_or(false));
                 let is_search_match = !state.search_query.is_empty()
                     && state.display_row_to_actual_row(display_row)
-                        .map(|ar| state.search_results_set.contains(&ar))
+                        .map(|row| {
+                            state.search_results.iter().any(|search_match| {
+                                search_match.row_index == row
+                            })
+                        })
                         .unwrap_or(false);
                 let bg = if row_sel { sel_color }
                          else if is_search_match { search_color }
@@ -1925,9 +1970,14 @@ impl TableView {
             state.is_dragging = false;
         }
 
+        if state.suppress_table_keyboard_once {
+            state.suppress_table_keyboard_once = false;
+            return;
+        }
         if self.editing.is_some() { return; }
         // While a column rename TextEdit is active, let it own all key events.
         if self.renaming_col.is_some() { return; }
+        if ctx.wants_keyboard_input() { return; }
 
         let total_rows = state.display_row_count();
         let total_cols = state.col_count();
@@ -2084,6 +2134,7 @@ fn commit_edit(state: &mut AppState, display_row: usize, display_col: usize, new
         new_value: new_val,
     });
     state.redo_stack.clear();
+    state.invalidate_search_after_data_change();
 }
 
 fn rename_column(state: &mut AppState, col: usize, new_name: String) {
@@ -2139,6 +2190,7 @@ fn delete_selection(state: &mut AppState) {
         state.undo_stack.push(EditAction::BatchCellEdit { edits: edits_batch });
         state.redo_stack.clear();
         state.cache_version += 1;
+        state.invalidate_search_after_data_change();
     }
 }
 
@@ -2195,6 +2247,7 @@ fn apply_paste(state: &mut AppState, text: &str) {
         state.undo_stack.push(EditAction::BatchCellEdit { edits: edits_batch });
         state.redo_stack.clear();
         state.cache_version += 1;
+        state.invalidate_search_after_data_change();
     }
 }
 
@@ -2257,6 +2310,7 @@ fn apply_undo(state: &mut AppState) {
     }
     state.redo_stack.push(action);
     state.cache_version += 1;
+    state.invalidate_search_after_data_change();
 }
 
 fn apply_redo(state: &mut AppState) {
@@ -2308,6 +2362,7 @@ fn apply_redo(state: &mut AppState) {
     }
     state.undo_stack.push(action);
     state.cache_version += 1;
+    state.invalidate_search_after_data_change();
 }
 
 // ── Column / row reorder ──────────────────────────────────────────────────────
@@ -2354,6 +2409,7 @@ fn move_selected_columns(state: &mut AppState, ctx_col: usize, delta: i32, col_c
         }
     }
     state.redo_stack.clear();
+    state.invalidate_search_after_data_change();
     for sel in state.selected_columns.iter_mut() {
         if cols.contains(sel) {
             *sel = (*sel as i32 + delta) as usize;
@@ -2383,6 +2439,7 @@ fn move_selected_rows(state: &mut AppState, ctx_display_row: usize, delta: i32, 
                 *sel = (*sel as i32 + delta) as usize;
             }
         }
+        state.invalidate_search_after_data_change();
         return;
     }
 
@@ -2406,6 +2463,7 @@ fn move_selected_rows(state: &mut AppState, ctx_display_row: usize, delta: i32, 
         }
     }
     state.redo_stack.clear();
+    state.invalidate_search_after_data_change();
     for sel in state.selected_rows.iter_mut() {
         *sel = (*sel as i32 + delta) as usize;
     }
@@ -2451,6 +2509,7 @@ fn move_row(state: &mut AppState, from: usize, to: usize) {
     move_row_impl(state, from, to);
     state.undo_stack.push(EditAction::MoveRow { from_row: from, to_row: to });
     state.redo_stack.clear();
+    state.invalidate_search_after_data_change();
 }
 
 // ── Row/cell helpers ──────────────────────────────────────────────────────────
@@ -2533,6 +2592,7 @@ fn insert_row(state: &mut AppState, at: usize) {
     state.row_cache.clear();
     state.cache_version += 1;
     state.invalidate_row_layout();
+    state.invalidate_search_after_data_change();
     state.undo_stack.push(crate::state::EditAction::Structural {
         description: format!("Insert row at {}", at),
     });
@@ -2558,6 +2618,7 @@ fn insert_col(state: &mut AppState, at: usize) {
     });
     state.row_cache.clear();
     state.cache_version += 1;
+    state.invalidate_search_after_data_change();
     state.undo_stack.push(crate::state::EditAction::Structural {
         description: format!("Insert column at {}", at),
     });
@@ -2582,6 +2643,7 @@ fn delete_col(state: &mut AppState, at: usize) {
     }
     state.row_cache.clear();
     state.cache_version += 1;
+    state.invalidate_search_after_data_change();
     state.undo_stack.push(crate::state::EditAction::Structural {
         description: format!("Delete column at {}", at),
     });
@@ -2618,6 +2680,7 @@ fn delete_row(state: &mut AppState, at: usize) {
     state.row_cache.clear();
     state.cache_version += 1;
     state.invalidate_row_layout();
+    state.invalidate_search_after_data_change();
     state.undo_stack.push(crate::state::EditAction::Structural {
         description: format!("Delete row at {}", at),
     });
