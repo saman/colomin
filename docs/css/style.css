@@ -911,6 +911,22 @@
       font-size: 11.5px;
       letter-spacing: 0.06em;
     }
+    .footer-badges {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    .footer-badges a {
+      display: inline-flex;
+    }
+    .footer-badges img {
+      display: block;
+      width: 125px;
+      height: 40px;
+      object-fit: contain;
+    }
 
     /* ---------- brew install pill / platform link row ---------- */
     .install-alt {
