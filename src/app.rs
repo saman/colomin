@@ -5,6 +5,7 @@ use eframe::egui;
 
 use crate::file_open::{self, LoadingHandle};
 use crate::state::{AppState, SortDirection};
+use crate::ui::shaped_text::ShapedTextRenderer;
 use crate::ui::stats::StatsSnapshot;
 use crate::ui::table::TableView;
 
@@ -266,6 +267,7 @@ pub struct ColominApp {
     debug_log_enabled: bool,
     /// User-chosen zoom multiplier (1.0 = OS default, applied via ctx.set_zoom_factor).
     ui_scale: f32,
+    shaped_text: ShapedTextRenderer,
 }
 
 impl ColominApp {
@@ -284,10 +286,7 @@ impl ColominApp {
         crate::ui::theme::apply_theme(&cc.egui_ctx, &initial_tab.state.current_theme());
 
         let available_fonts = Self::enumerate_system_fonts();
-
-        if let Some(ref font_name) = config.selected_font {
-            Self::apply_font(&cc.egui_ctx, Some(font_name), &available_fonts);
-        }
+        Self::apply_font(&cc.egui_ctx, config.selected_font.as_deref(), &available_fonts);
         initial_tab.state.selected_font = config.selected_font;
         initial_tab.state.font_size = config.font_size;
         initial_tab.state.copy_mode = config.copy_mode;
@@ -311,6 +310,7 @@ impl ColominApp {
             started_at: std::time::Instant::now(),
             debug_log_enabled: false,
             ui_scale: config.ui_scale,
+            shaped_text: ShapedTextRenderer::new(),
         }
     }
 
@@ -1545,12 +1545,14 @@ impl eframe::App for ColominApp {
         }
 
         // ── Main table ──
-        let tab = &mut self.tabs[self.active_tab];
-        let panel_fill = tab.state.current_theme().bg;
+        let active_tab = self.active_tab;
+        let panel_fill = self.tabs[active_tab].state.current_theme().bg;
+        let (tabs, shaped_text) = (&mut self.tabs, &mut self.shaped_text);
+        let tab = &mut tabs[active_tab];
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(panel_fill))
             .show(ctx, |ui| {
-                tab.table.show(ui, &mut tab.state, ctx);
+                tab.table.show(ui, &mut tab.state, ctx, shaped_text);
             });
 
         // Save file settings when a column/row resize drag ends or double-click auto-fit fires.
@@ -1587,18 +1589,104 @@ impl ColominApp {
     }
 
     fn apply_font(ctx: &egui::Context, family: Option<&str>, available: &[(String, std::path::PathBuf, u32)]) {
-        let Some(name) = family else {
-            ctx.set_fonts(egui::FontDefinitions::default());
-            return;
-        };
-        let Some((_, path, idx)) = available.iter().find(|(n, _, _)| n == name) else { return };
-        let Ok(bytes) = std::fs::read(path) else { return };
         let mut fonts = egui::FontDefinitions::default();
-        let mut fd = egui::FontData::from_owned(bytes);
-        fd.index = *idx;
-        fonts.font_data.insert(name.to_string(), fd.into());
-        fonts.families.entry(egui::FontFamily::Proportional).or_default().insert(0, name.to_string());
+
+        if let Some(name) = family {
+            if let Some((_, path, idx)) = available.iter().find(|(n, _, _)| n == name) {
+                if let Ok(bytes) = std::fs::read(path) {
+                    let mut fd = egui::FontData::from_owned(bytes);
+                    fd.index = *idx;
+                    fonts.font_data.insert(name.to_string(), fd.into());
+                    let family_fonts = fonts
+                        .families
+                        .entry(egui::FontFamily::Proportional)
+                        .or_default();
+                    family_fonts.retain(|font_name| font_name != name);
+                    family_fonts.insert(0, name.to_string());
+                }
+            }
+        }
+
+        Self::add_multilingual_font_fallbacks(&mut fonts, available);
         ctx.set_fonts(fonts);
+    }
+
+    fn add_multilingual_font_fallbacks(
+        fonts: &mut egui::FontDefinitions,
+        available: &[(String, std::path::PathBuf, u32)],
+    ) {
+        const FALLBACK_HINTS: &[&str] = &[
+            "SF Arabic",
+            "Geeza Pro",
+            "Noto Naskh Arabic",
+            "Noto Nastaliq Urdu",
+            "Noto Nastaliq",
+            "Arial Unicode MS",
+            "Arial Unicode",
+            "Noto Sans Arabic",
+            "Tahoma",
+            "Arial",
+            "SF Hebrew",
+            "Arial Hebrew",
+            "Noto Sans Hebrew",
+            "PingFang SC",
+            "PingFang TC",
+            "PingFang HK",
+            "Hiragino Sans",
+            "Hiragino Sans GB",
+            "Yu Gothic",
+            "Meiryo",
+            "Microsoft YaHei",
+            "Microsoft JhengHei",
+            "Malgun Gothic",
+            "Noto Sans CJK",
+            "Noto Sans",
+            "DejaVu Sans",
+            "Liberation Sans",
+            "FreeSans",
+            "Segoe UI",
+            "Nirmala UI",
+            "Devanagari Sangam MN",
+            "Noto Sans Devanagari",
+            "Noto Sans Thai",
+            "Thonburi",
+            "Noto Sans Myanmar",
+        ];
+
+        let mut loaded_faces: std::collections::HashSet<(std::path::PathBuf, u32)> =
+            std::collections::HashSet::new();
+        for hint in FALLBACK_HINTS {
+            let Some((name, path, idx)) = Self::find_font_match(available, hint) else { continue };
+            if !loaded_faces.insert((path.clone(), *idx)) || fonts.font_data.contains_key(name) {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(path) else { continue };
+            let mut fd = egui::FontData::from_owned(bytes);
+            fd.index = *idx;
+            fonts.font_data.insert(name.clone(), fd.into());
+
+            for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+                let family_fonts = fonts.families.entry(family).or_default();
+                if !family_fonts.iter().any(|font_name| font_name == name) {
+                    family_fonts.push(name.clone());
+                }
+            }
+        }
+    }
+
+    fn find_font_match<'a>(
+        available: &'a [(String, std::path::PathBuf, u32)],
+        hint: &str,
+    ) -> Option<&'a (String, std::path::PathBuf, u32)> {
+        let hint_lower = hint.to_lowercase();
+        available
+            .iter()
+            .find(|(name, _, _)| name.to_lowercase() == hint_lower)
+            .or_else(|| {
+                available
+                    .iter()
+                    .find(|(name, _, _)| name.to_lowercase().contains(&hint_lower))
+            })
     }
 
     /// Show `path` in the system file manager.
