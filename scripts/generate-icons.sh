@@ -58,6 +58,69 @@ do
         --out "$ICONSET/$name" >/dev/null
 done
 
+echo "Cleaning tiny macOS icon edge matte..."
+python3 - <<PY
+from pathlib import Path
+from PIL import Image
+
+ICONSET = Path("$ICONSET")
+
+# The SVG renderer can leave very light RGB values in semi-transparent edge
+# pixels. At Finder/sidebar sizes those pixels read as a silver rim, so clean
+# the matte on the low-resolution macOS layers before iconutil packs them.
+EDGE_FILES = {
+    "icon_16x16.png": True,
+    "icon_16x16@2x.png": True,
+    "icon_32x32.png": True,
+}
+ALPHA_THRESHOLD = 96
+
+
+def nearest_opaque_rgb(source, x, y):
+    width, height = source.size
+    for radius in range(1, max(width, height) + 1):
+        best = None
+        best_dist = None
+        x0 = max(0, x - radius)
+        x1 = min(width - 1, x + radius)
+        y0 = max(0, y - radius)
+        y1 = min(height - 1, y + radius)
+        for yy in range(y0, y1 + 1):
+            for xx in range(x0, x1 + 1):
+                r, g, b, a = source.getpixel((xx, yy))
+                if a != 255:
+                    continue
+                dist = (xx - x) * (xx - x) + (yy - y) * (yy - y)
+                if best is None or dist < best_dist:
+                    best = (r, g, b)
+                    best_dist = dist
+        if best is not None:
+            return best
+    return None
+
+
+for filename, harden_alpha in EDGE_FILES.items():
+    path = ICONSET / filename
+    image = Image.open(path).convert("RGBA")
+    source = image.copy()
+    pixels = image.load()
+
+    for y in range(image.height):
+        for x in range(image.width):
+            r, g, b, a = pixels[x, y]
+            if not 0 < a < 255:
+                continue
+            replacement = nearest_opaque_rgb(source, x, y)
+            if replacement is None:
+                continue
+            r, g, b = replacement
+            if harden_alpha:
+                a = 255 if a >= ALPHA_THRESHOLD else 0
+            pixels[x, y] = (r, g, b, a)
+
+    image.save(path)
+PY
+
 echo "Building Colomin.icns..."
 iconutil -c icns "$ICONSET" -o "$PROJECT_DIR/assets/Colomin.icns"
 
