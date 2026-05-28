@@ -491,3 +491,57 @@ pub fn aggregate_column(
         max_length,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TempCsv {
+        path: PathBuf,
+    }
+
+    impl TempCsv {
+        fn write(contents: &str) -> Self {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be after UNIX_EPOCH")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "colomin-parser-test-{}-{}.csv",
+                std::process::id(),
+                nanos
+            ));
+            std::fs::write(&path, contents).expect("test CSV should be writable");
+            Self { path }
+        }
+    }
+
+    impl Drop for TempCsv {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+
+    #[test]
+    fn index_and_read_chunk_preserve_utf8_arabic_and_persian_text() {
+        let csv = TempCsv::write("نام,شهر\nعلی,تهران\nليلى,دبي\n");
+
+        let index = index_file(&csv.path).expect("UTF-8 CSV should index");
+        let chunk = read_chunk_with_delim(
+            &csv.path,
+            &index.row_offsets,
+            &HashMap::new(),
+            0,
+            2,
+            index.columns.len(),
+            index.delimiter,
+        )
+        .expect("UTF-8 CSV should read");
+
+        assert_eq!(index.columns[0].name, "نام");
+        assert_eq!(chunk.rows[0][0], "علی");
+        assert_eq!(chunk.rows[1][1], "دبي");
+    }
+}

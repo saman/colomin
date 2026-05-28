@@ -4,6 +4,7 @@ use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 
 use crate::state::{AppState, BatchEditEntry, CellCoord, EditAction, SelectionType};
+use crate::ui::shaped_text::{self, ShapedTextRenderer};
 
 pub struct TableView {
     pub editing: Option<(usize, usize, String)>,
@@ -65,6 +66,48 @@ fn paint_bottom_border(ui: &egui::Ui, rect: egui::Rect, color: egui::Color32) {
         rect.max,
     );
     ui.painter().rect_filled(line, 0.0, color);
+}
+
+fn paint_table_text(
+    shaped_text: &mut ShapedTextRenderer,
+    ctx: &egui::Context,
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    text: &str,
+    font_size: f32,
+    color: egui::Color32,
+    font_family: Option<&str>,
+) {
+    if shaped_text::should_shape_text(text) {
+        shaped_text.paint(ctx, painter, rect, text, font_size, color, font_family);
+    } else {
+        painter.with_clip_rect(rect).text(
+            egui::pos2(rect.left(), rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            text,
+            egui::FontId::proportional(font_size),
+            color,
+        );
+    }
+}
+
+fn measure_table_text_width(
+    shaped_text: &mut ShapedTextRenderer,
+    ui: &egui::Ui,
+    text: &str,
+    font_size: f32,
+    font_family: Option<&str>,
+) -> f32 {
+    if shaped_text::should_shape_text(text) {
+        shaped_text.measure_width(text, font_size, font_family)
+    } else {
+        let font_id = egui::FontId::proportional(font_size);
+        ui.fonts(|f| {
+            f.layout_no_wrap(text.to_owned(), font_id, egui::Color32::WHITE)
+                .size()
+                .x
+        })
+    }
 }
 
 /// Draw a dashed rectangle border with an animated phase offset (marching ants).
@@ -331,7 +374,13 @@ impl TableView {
         }
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, state: &mut AppState, ctx: &egui::Context) {
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        ctx: &egui::Context,
+        shaped_text: &mut ShapedTextRenderer,
+    ) {
         let Some(_) = state.file else { return };
 
         // Reset selection bounding rect; it's re-accumulated during cell rendering.
@@ -410,6 +459,7 @@ impl TableView {
         }
 
         let colors = state.current_theme();
+        let selected_font = state.selected_font.clone();
         let row_count = state.display_row_count();
         let col_count = state.col_count();
         let gutter_width = state.row_number_width();
@@ -637,25 +687,24 @@ impl TableView {
                             .unwrap_or(false);
 
                         if is_renaming {
-                            // Render a TextEdit overlay; renaming only possible when header_row_enabled.
-                            ui.spacing_mut().item_spacing = egui::vec2(4.0, 2.0);
+                            // Render a shaped single-line editor; renaming only possible when header_row_enabled.
                             let buf = &mut self.renaming_col.as_mut().unwrap().1;
-                            let te = egui::TextEdit::singleline(buf)
-                                .font(egui::FontId::proportional(state.font_size))
-                                .desired_width(rect.width() - 8.0);
-                            let resp = ui.add(te);
-                            if !resp.has_focus() {
-                                resp.request_focus();
-                            }
-                            let enter   = ctx.input(|i| i.key_pressed(egui::Key::Enter));
-                            let escaped = ctx.input(|i| i.key_pressed(egui::Key::Escape));
-                            let commit  = (resp.lost_focus() || enter) && !escaped;
+                            let edit = shaped_text.singleline_editor(
+                                ui,
+                                egui::Id::new(("hdr_rename_edit", col_idx as u64)),
+                                rect,
+                                buf,
+                                state.font_size,
+                                text_pri,
+                                selected_font.as_deref(),
+                            );
+                            let commit = (edit.response.lost_focus() || edit.enter) && !edit.escaped;
                             let _ = buf;
                             if commit {
                                 if let Some((c, new_name)) = self.renaming_col.take() {
                                     rename_column(state, c, new_name);
                                 }
-                            } else if escaped {
+                            } else if edit.escaped {
                                 self.renaming_col = None;
                             }
                         } else {
@@ -704,15 +753,20 @@ impl TableView {
 
                             // Text label — leave room for sort icon on the right.
                             let label_max_x = if is_sorted_here { rect.right() - 20.0 } else { rect.right() - 4.0 };
-                            let galley = ui.painter().layout_no_wrap(
-                                name.clone(),
-                                egui::FontId::proportional(state.font_size),
-                                color,
+                            let text_rect = egui::Rect::from_min_max(
+                                egui::pos2(rect.left() + 6.0, rect.top()),
+                                egui::pos2(label_max_x, rect.bottom()),
                             );
-                            let text_pos = egui::pos2(rect.left() + 6.0, rect.center().y - galley.size().y * 0.5);
-                            // Clip text so it doesn't overlap the sort icon.
-                            let clip = egui::Rect::from_min_max(rect.min, egui::pos2(label_max_x, rect.max.y));
-                            ui.painter().with_clip_rect(clip).galley(text_pos, galley, color);
+                            paint_table_text(
+                                shaped_text,
+                                ctx,
+                                ui.painter(),
+                                text_rect,
+                                name,
+                                state.font_size,
+                                color,
+                                selected_font.as_deref(),
+                            );
 
                             // Sort icon painted as SVG (no glyph needed).
                             if is_sorted_here {
@@ -870,12 +924,15 @@ impl TableView {
                         }
                         // Double-click the resize handle → auto-fit width to content.
                         if handle_resp.double_clicked() {
-                            let font_id = egui::FontId::proportional(state.font_size);
                             // Minimum: the column header name.
                             let col_label = col_name_for_display(state, col_idx);
-                            let mut best_w = ui.fonts(|f| {
-                                f.layout_no_wrap(col_label, font_id.clone(), egui::Color32::WHITE).size().x
-                            }) + 28.0; // header padding + resize-handle zone
+                            let mut best_w = measure_table_text_width(
+                                shaped_text,
+                                ui,
+                                &col_label,
+                                state.font_size,
+                                selected_font.as_deref(),
+                            ) + 28.0; // header padding + resize-handle zone
 
                             // Scan rows: load uncached ones on the fly (with a cap for large files).
                             let total = state.display_row_count();
@@ -890,9 +947,13 @@ impl TableView {
                                 let Some(val) = state.get_display_cell(display_row, col_idx)
                                     else { continue };
                                 if val.is_empty() { continue; }
-                                let w = ui.fonts(|f| {
-                                    f.layout_no_wrap(val, font_id.clone(), egui::Color32::WHITE).size().x
-                                }) + 12.0; // cell l+r padding
+                                let w = measure_table_text_width(
+                                    shaped_text,
+                                    ui,
+                                    &val,
+                                    state.font_size,
+                                    selected_font.as_deref(),
+                                ) + 12.0; // cell l+r padding
                                 if w > best_w { best_w = w; }
                             }
 
@@ -990,30 +1051,22 @@ impl TableView {
                                         accent,
                                     );
                                 }
-                                // Restore spacing so the TextEdit renders at normal height.
-                                ui.spacing_mut().item_spacing = egui::vec2(4.0, 2.0);
-                                let desired_w = ui.available_width() - 4.0;
                                 let buf = &mut self.editing.as_mut().unwrap().2;
-                                // Stable explicit ID prevents ID churn when the editing cell
-                                // changes row/col, which would otherwise drop focus.
+                                // Stable explicit ID prevents focus churn when the editing cell changes.
                                 let edit_id = egui::Id::new(("edit", display_row as u64, col_idx as u64));
-                                let te = egui::TextEdit::singleline(buf)
-                                    .id(edit_id)
-                                    .font(egui::FontId::proportional(state.font_size))
-                                    .desired_width(desired_w)
-                                    .frame(false)
-                                    .margin(egui::Margin::symmetric(4, 0));
-                                let resp = ui.add(te);
-                                // Only request focus when not yet focused; calling every
-                                // frame interferes with lost_focus() detection.
-                                if !resp.has_focus() {
-                                    resp.request_focus();
-                                }
-                                let enter   = ctx.input(|i| i.key_pressed(egui::Key::Enter));
-                                let tab     = ctx.input(|i| i.key_pressed(egui::Key::Tab));
-                                let escaped = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+                                let edit = shaped_text.singleline_editor(
+                                    ui,
+                                    edit_id,
+                                    edit_rect,
+                                    buf,
+                                    state.font_size,
+                                    text_pri,
+                                    selected_font.as_deref(),
+                                );
+                                let enter = edit.enter;
+                                let tab = edit.tab;
                                 // Commit on Enter/Tab OR when egui surrenders focus (click-away).
-                                let commit  = (resp.lost_focus() || enter || tab) && !escaped;
+                                let commit = (edit.response.lost_focus() || enter || tab) && !edit.escaped;
                                 let _ = buf; // end borrow before take()
                                 if commit {
                                     if let Some((r, c, new_val)) = self.editing.take() {
@@ -1042,7 +1095,7 @@ impl TableView {
                                             state.selected_columns.clear();
                                         }
                                     }
-                                } else if escaped {
+                                } else if edit.escaped {
                                     self.editing = None;
                                 }
                             } else {
@@ -1075,12 +1128,15 @@ impl TableView {
                                     egui::pos2(resp.rect.left() + 4.0, resp.rect.min.y),
                                     egui::pos2(resp.rect.right() - 4.0, resp.rect.max.y),
                                 );
-                                ui.painter().with_clip_rect(cell_clip).text(
-                                    egui::pos2(resp.rect.left() + 4.0, resp.rect.center().y),
-                                    egui::Align2::LEFT_CENTER,
+                                paint_table_text(
+                                    shaped_text,
+                                    ctx,
+                                    ui.painter(),
+                                    cell_clip,
                                     &value,
-                                    egui::FontId::proportional(state.font_size),
+                                    state.font_size,
                                     text_pri,
+                                    selected_font.as_deref(),
                                 );
 
                                 // Accumulate selected cells for the marching-ants border.
@@ -1284,16 +1340,19 @@ impl TableView {
                         if let Some(name) = col_names.get(*col_idx) {
                             if !name.is_empty() {
                                 let label_max_x = if is_sorted_here { rect.right() - 20.0 } else { rect.right() - 4.0 };
-                                let text_clip = egui::Rect::from_min_max(
-                                    rect.min,
+                                let text_rect = egui::Rect::from_min_max(
+                                    egui::pos2(rect.left() + 8.0, rect.top()),
                                     egui::pos2(label_max_x, rect.max.y),
                                 );
-                                painter.clone().with_clip_rect(text_clip).text(
-                                    egui::pos2(rect.left() + 8.0, rect.center().y),
-                                    egui::Align2::LEFT_CENTER,
+                                paint_table_text(
+                                    shaped_text,
+                                    ctx,
+                                    &painter,
+                                    text_rect,
                                     name,
-                                    egui::FontId::proportional(state.font_size - 1.0),
+                                    state.font_size - 1.0,
                                     label_color,
+                                    selected_font.as_deref(),
                                 );
                             }
                         }
