@@ -111,6 +111,9 @@ fn default_tab_mode() -> bool { true }
 fn default_font_size() -> f32 { 12.0 }
 fn default_ui_scale() -> f32 { 1.0 }
 
+const MIN_UI_SCALE: f32 = 0.5;
+const MAX_UI_SCALE: f32 = 2.0;
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct AppConfig {
     #[serde(default)]
@@ -744,7 +747,7 @@ impl eframe::App for ColominApp {
                 ((self.ui_scale + 0.05) * 20.0).round() / 20.0
             } else {
                 ((self.ui_scale - 0.05) * 20.0).round() / 20.0
-            }.clamp(1.0, 2.0);
+            }.clamp(MIN_UI_SCALE, MAX_UI_SCALE);
             self.ui_scale = new_scale;
             ctx.set_zoom_factor(new_scale);
             AppConfig {
@@ -2356,7 +2359,7 @@ impl ColominApp {
                                                 ui.add(egui::Label::new(egui::RichText::new("Zoom").size(12.0).color(text_pri)).selectable(false));
                                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                                     if ui.add(egui::Button::new(egui::RichText::new("+").size(12.0).color(text_pri)).small().frame(false)).clicked() {
-                                                        let next = (ui_scale + 0.05).min(2.0);
+                                                        let next = (ui_scale + 0.05).min(MAX_UI_SCALE);
                                                         *ui_scale_change = Some((next * 20.0).round() / 20.0);
                                                     }
                                                     let dv_id = egui::Id::new("zoom_dv");
@@ -2364,7 +2367,7 @@ impl ColominApp {
                                                     let mut pct = (pending.unwrap_or(ui_scale) * 100.0).round();
                                                     let resp = ui.add(
                                                         egui::DragValue::new(&mut pct)
-                                                            .range(100.0_f32..=200.0_f32)
+                                                            .range(MIN_UI_SCALE * 100.0..=MAX_UI_SCALE * 100.0)
                                                             .speed(1.0)
                                                             .suffix("%")
                                                             .fixed_decimals(0),
@@ -2372,13 +2375,13 @@ impl ColominApp {
                                                     if resp.dragged() {
                                                         ui.memory_mut(|m| m.data.insert_temp(dv_id, pct / 100.0));
                                                     } else if resp.drag_stopped() {
-                                                        *ui_scale_change = Some((pct / 100.0).clamp(1.0, 2.0));
+                                                        *ui_scale_change = Some((pct / 100.0).clamp(MIN_UI_SCALE, MAX_UI_SCALE));
                                                         ui.memory_mut(|m| m.data.remove::<f32>(dv_id));
                                                     } else if resp.changed() {
-                                                        *ui_scale_change = Some((pct / 100.0).clamp(1.0, 2.0));
+                                                        *ui_scale_change = Some((pct / 100.0).clamp(MIN_UI_SCALE, MAX_UI_SCALE));
                                                     }
                                                     if ui.add(egui::Button::new(egui::RichText::new("−").size(12.0).color(text_pri)).small().frame(false)).clicked() {
-                                                        let next = (ui_scale - 0.05).max(1.0);
+                                                        let next = (ui_scale - 0.05).max(MIN_UI_SCALE);
                                                         *ui_scale_change = Some((next * 20.0).round() / 20.0);
                                                     }
                                                 });
